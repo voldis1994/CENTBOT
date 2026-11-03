@@ -79,11 +79,9 @@ set CURL_CA_BUNDLE=%CD%\certs\cacert.pem
 
 call START.bat
 echo.
-echo [CENTBOT] Prefer one-shot: FIX_LIVE.bat  ^(identity + Android + ETH check + start^)
-echo           Or separately:
-echo           SET_ETH_KEY.bat       — TaskMarket claim ^(wallet_required^)
-echo           REGISTER_BASED.bat    — BasedAgents identity
-echo           INSTALL_ANDROID.bat   — Android SDK + CENTBOT AVDs
+echo [CENTBOT] Prefer: UPDATE_ALL.bat  ^(pull + FIX_LIVE^)
+echo           Or: FIX_LIVE.bat / STATUS.bat
+echo           SET_ETH_KEY.bat  ENSURE_DOCKER.bat  INSTALL_ANDROID.bat
 echo.
 echo [CENTBOT] If panel still shows _MEI certifi errors, you still have an old process:
 echo           taskkill /IM CENTBOT.exe /F
