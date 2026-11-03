@@ -117,9 +117,19 @@ echo.
 if exist "config\local.yaml" if "%WIZ_EC%"=="0" (
   echo [CENTBOT] Config OK: config\local.yaml
 )
+echo.
+echo [CENTBOT] Installing Android SDK + CENTBOT AVDs ^(optional lane, non-fatal^)...
+"%PY%" -m centbot.windows.android_sdk -y
+if errorlevel 1 (
+  echo [CENTBOT] Android SDK incomplete — later run INSTALL_ANDROID.bat
+) else (
+  echo [CENTBOT] Android SDK OK ^(or already present^)
+)
+
 if "%EC%"=="0" (
   echo [CENTBOT] SETUP finished.
-  echo           Next: START.bat   or build exe: BUILD_EXE.bat then double-click CENTBOT.exe
+  echo           Next: SET_ETH_KEY.bat  then  START.bat
+  echo           Android only: INSTALL_ANDROID.bat
 ) else (
   echo [CENTBOT] SETUP finished with issues ^(exit %EC%^). Re-run SETUP.bat to resume.
 )

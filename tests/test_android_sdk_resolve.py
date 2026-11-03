@@ -39,3 +39,37 @@ def test_bountybook_offline_message():
     from centbot.platforms.bountybook import _offline_message
 
     assert "platform_offline_dns" in _offline_message("Failed to resolve 'api.bountybook.ai' ([Errno 11001])")
+
+
+def test_write_android_env(tmp_path: Path):
+    from centbot.windows.android_sdk import write_android_env
+
+    tools = {
+        "sdk_root": str(tmp_path / "Sdk"),
+        "adb": str(tmp_path / "Sdk" / "platform-tools" / "adb.exe"),
+        "emulator": str(tmp_path / "Sdk" / "emulator" / "emulator.exe"),
+    }
+    path = write_android_env(tools, root=tmp_path)
+    assert path and path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "ANDROID_HOME=" in text
+    assert "CENTBOT_ADB=" in text
+
+
+def test_download_cmdline_skipped_when_present(tmp_path: Path):
+    from centbot.windows.android_sdk import download_cmdline_tools
+
+    latest = tmp_path / "cmdline-tools" / "latest" / "bin"
+    latest.mkdir(parents=True)
+    marker = latest / ("sdkmanager.bat" if __import__("sys").platform.startswith("win") else "sdkmanager")
+    marker.write_text("@echo off\n", encoding="utf-8")
+    result = download_cmdline_tools(tmp_path)
+    assert result["ok"] is True
+    assert result.get("skipped") is True
+
+
+def test_ensure_avds_alias_exists():
+    from centbot.windows import avd
+
+    assert callable(avd.ensure_avds)
+    assert avd.ensure_avds is not None

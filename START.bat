@@ -1,6 +1,6 @@
 @echo off
 REM CENTBOT START — Python ONLY (never auto-launch broken CENTBOT.exe)
-SETLOCAL EnableExtensions
+SETLOCAL EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 if exist data\EMERGENCY_STOP (
@@ -62,6 +62,24 @@ if exist "%CD%\data\eth.env" (
 if not defined CENTBOT_ETH_PRIVATE_KEY (
   echo [CENTBOT] WARNING: no CENTBOT_ETH_PRIVATE_KEY — TaskMarket claims will fail wallet_required.
   echo [CENTBOT] Run SET_ETH_KEY.bat once, then START.bat again.
+)
+
+REM Load Android SDK paths (created by INSTALL_ANDROID.bat)
+if exist "%CD%\data\android.env" (
+  for /f "usebackq tokens=1* delims==" %%A in ("%CD%\data\android.env") do (
+    if /I "%%A"=="ANDROID_HOME" set "ANDROID_HOME=%%B"
+    if /I "%%A"=="ANDROID_SDK_ROOT" set "ANDROID_SDK_ROOT=%%B"
+    if /I "%%A"=="CENTBOT_ADB" if not "%%B"=="" set "PATH=%%~dpB;!PATH!"
+    if /I "%%A"=="CENTBOT_EMULATOR" if not "%%B"=="" set "PATH=%%~dpB;!PATH!"
+  )
+)
+if defined ANDROID_HOME (
+  set "PATH=%ANDROID_HOME%\platform-tools;%ANDROID_HOME%\emulator;%ANDROID_HOME%\cmdline-tools\latest\bin;%PATH%"
+)
+if not defined ANDROID_HOME if exist "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" (
+  set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
+  set "ANDROID_SDK_ROOT=%LOCALAPPDATA%\Android\Sdk"
+  set "PATH=%LOCALAPPDATA%\Android\Sdk\platform-tools;%LOCALAPPDATA%\Android\Sdk\emulator;%PATH%"
 )
 
 echo [CENTBOT] Starting LIVE with Python ^(exe disabled^)...

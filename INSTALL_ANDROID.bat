@@ -1,6 +1,7 @@
 @echo off
-REM Install Android SDK + CENTBOT_ANDROID_01..N AVDs for the emulator lane.
-SETLOCAL EnableExtensions
+REM Install Android SDK (Google cmdline-tools) + CENTBOT_ANDROID AVDs.
+REM Does NOT require Android Studio, but can fall back to winget Studio.
+SETLOCAL EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "PY="
@@ -13,30 +14,39 @@ if not defined PY (
 )
 
 echo.
-echo [CENTBOT] Android SDK install / AVD setup
-echo          This may install Android Studio via winget ^(long download^).
+echo ============================================
+echo  CENTBOT Android SDK + AVD setup
+echo  1^) Google cmdline-tools  2^) platform-tools/emulator
+echo  3^) system-image android-30  4^) CENTBOT_ANDROID_01..N
+echo ============================================
 echo.
 
 "%PY%" -m centbot.windows.android_sdk -y
 set "EC=%ERRORLEVEL%"
 
-REM Persist common SDK path for future CMD sessions
-if exist "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" (
+if exist "%LOCALAPPDATA%\Android\Sdk" (
   setx ANDROID_HOME "%LOCALAPPDATA%\Android\Sdk" >nul
   setx ANDROID_SDK_ROOT "%LOCALAPPDATA%\Android\Sdk" >nul
-  echo [CENTBOT] Set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
+  set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
+  set "ANDROID_SDK_ROOT=%LOCALAPPDATA%\Android\Sdk"
+  set "PATH=%LOCALAPPDATA%\Android\Sdk\platform-tools;%LOCALAPPDATA%\Android\Sdk\emulator;%LOCALAPPDATA%\Android\Sdk\cmdline-tools\latest\bin;%PATH%"
+  echo [CENTBOT] ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
+)
+
+if exist data\android.env (
+  echo [CENTBOT] Wrote data\android.env for START.bat
 )
 
 if "%EC%"=="0" (
   echo.
-  echo [CENTBOT] Android OK. Run STOP.bat then START.bat
-  echo          Panel should show Android ON with AVD slots, not "nav SDK".
+  echo [CENTBOT] Android OK.
+  echo          Next: STOP.bat then START.bat
+  echo          Panel Android should show AVD slots ^(not "nav SDK"^).
 ) else (
   echo.
-  echo [CENTBOT] Android not ready yet.
-  echo          1^) Install Android Studio manually if winget failed
-  echo          2^) Open SDK Manager → install Platform-Tools + Emulator + Android 30 system image
-  echo          3^) Re-run INSTALL_ANDROID.bat
+  echo [CENTBOT] Android not fully ready ^(exit %EC%^).
+  echo          Re-run INSTALL_ANDROID.bat as Administrator.
+  echo          Or install Android Studio, open SDK Manager once, then re-run.
 )
 ENDLOCAL
 exit /b %EC%

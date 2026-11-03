@@ -78,7 +78,7 @@ class EmulatorManager:
                     else ("ON · nav AVD" if installed else "ON · nav SDK")
                 )
             ),
-            "setup_hint": "Run SETUP.bat to create CENTBOT_ANDROID_01..04; set android.enabled: true in local.yaml.",
+            "setup_hint": "Run INSTALL_ANDROID.bat (Google cmdline-tools + CENTBOT_ANDROID AVDs), then STOP/START. Set android.enabled: true.",
         }
 
     def start(self, avd: str | None = None) -> dict[str, Any]:

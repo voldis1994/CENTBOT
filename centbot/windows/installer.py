@@ -208,39 +208,38 @@ class WindowsSetup:
         return {"ok": False, "error": "winget_missing"}
 
     def ensure_android_sdk(self) -> dict[str, Any]:
-        adb = which("adb")
-        emu = which("emulator")
-        if adb and emu:
-            self.progress.mark("android_sdk", ok=True, skipped=True, detail=f"adb={adb}")
-            self.progress.mark("android_emulator", ok=True, skipped=True, detail=f"emulator={emu}")
-            return {"ok": True, "skipped": True, "adb": adb, "emulator": emu}
+        from centbot.windows.android_sdk import ensure_path_env, install_android_stack, resolve_sdk_tools
+
+        tools = ensure_path_env(resolve_sdk_tools())
+        if tools.get("ok") and tools.get("have_cmdline"):
+            self.progress.mark("android_sdk", ok=True, skipped=True, detail=f"adb={tools.get('adb')}")
+            self.progress.mark("android_emulator", ok=True, skipped=True, detail=f"emulator={tools.get('emulator')}")
+            return {"ok": True, "skipped": True, **{k: tools.get(k) for k in ("adb", "emulator", "sdk_root")}}
+        if tools.get("ok"):
+            self.progress.mark("android_sdk", ok=True, skipped=True, detail=f"adb={tools.get('adb')}")
+            self.progress.mark("android_emulator", ok=True, skipped=True, detail=f"emulator={tools.get('emulator')}")
+            return {"ok": True, "skipped": True, **{k: tools.get(k) for k in ("adb", "emulator", "sdk_root")}}
         if not sys.platform.startswith("win"):
             self.progress.mark("android_sdk", ok=False, detail="not_windows_auto_install")
             self.progress.mark("android_emulator", ok=False, detail="not_windows_auto_install")
             return {
                 "ok": False,
                 "error": "not_windows",
-                "hint": "On Windows SETUP installs Android cmdline-tools via official Google channel when confirmed",
+                "hint": "On Windows SETUP installs Google cmdline-tools into %LOCALAPPDATA%\\Android\\Sdk",
             }
         if not self.assume_yes:
             return {
                 "ok": False,
                 "error": "needs_confirmation",
                 "component": "android_sdk",
-                "hint": "Install Android Studio or cmdline-tools from https://developer.android.com/studio#command-tools",
+                "hint": "Run INSTALL_ANDROID.bat or SETUP.bat --yes",
             }
-        # Prefer winget Android Studio (pulls SDK)
-        if which("winget"):
-            result = self.runner(
-                ["winget", "install", "--id", "Google.AndroidStudio", "-e", "--accept-package-agreements", "--accept-source-agreements"],
-                {"timeout": 3600},
-            )
-            ok = bool(result.get("ok"))
-            self.progress.mark("android_sdk", ok=ok, detail=str(result)[:500])
-            self.progress.mark("android_emulator", ok=ok, detail="bundled_with_android_studio")
-            return {"ok": ok, "result": result}
-        self.progress.mark("android_sdk", ok=False, detail="winget_missing")
-        return {"ok": False, "error": "winget_missing"}
+        # Official Google cmdline-tools first; Studio only as fallback inside install_android_stack
+        report = install_android_stack(assume_yes=True, create_avds=False, allow_studio_fallback=True)
+        ok = bool((report.get("tools") or {}).get("ok"))
+        self.progress.mark("android_sdk", ok=ok, detail=str(report.get("hint_lv") or report)[:500])
+        self.progress.mark("android_emulator", ok=ok, detail="cmdline_tools_or_studio")
+        return {"ok": ok, "result": report}
 
     def ensure_ollama(self) -> dict[str, Any]:
         if not self.install_ollama:
