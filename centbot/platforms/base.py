@@ -70,6 +70,17 @@ class PlatformConnector(ABC):
     def check_payment(self, task_id: str) -> dict[str, Any]:
         return {"task_id": task_id, "status": "unknown"}
 
+    def register_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Honest default: platform has no automated registration in CENTBOT."""
+        return {
+            "ok": False,
+            "error": "register_api_unsupported",
+            "platform": self.name,
+            "status": "error",
+            "user_action": "register_manually_on_platform_then_store_api_credentials",
+            "hint": f"{self.name} does not expose an approved auto-register endpoint to CENTBOT",
+        }
+
     def health(self) -> dict[str, Any]:
         return {
             "platform": self.name,

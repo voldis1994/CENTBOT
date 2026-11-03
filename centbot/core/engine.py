@@ -455,15 +455,31 @@ class CentBotEngine:
         if not self.rate_limiter.allow():
             self.journal.record("discover", "rate_limited")
             return []
-        # Probe configured extra boards (never invent catalogs)
+        # Probe configured extras + auto-discover known public boards (real URLs only)
         try:
-            from centbot.discovery.new_platforms import scout_configured_extras
+            from centbot.discovery.new_platforms import auto_attach_reachable, scout_configured_extras
 
+            attach = auto_attach_reachable(self.config, persist=True)
+            self.journal.record(
+                "platform_discover",
+                "ok" if attach.get("ok") else "error",
+                attached=attach.get("attached"),
+                probed=attach.get("probed"),
+                skipped=attach.get("skipped"),
+            )
+            # Rebuild platform map if new extras attached
+            if attach.get("attached"):
+                from centbot.platforms.registry import build_platforms
+
+                self.platforms = build_platforms(self.config, credential_getter=self.credentials.get)
+                self.scanner.platforms = self.platforms
+                self.acceptor.platforms = self.platforms
+                self.submitter.platforms = self.platforms
             for scout in scout_configured_extras(self.config):
                 self.journal.record(
                     "platform_scout",
                     "ok" if scout.get("ok") else "error",
-                    **{k: v for k, v in scout.items() if k != "item"},
+                    **{k: v for k, v in scout.items() if k not in {"item", "candidate"}},
                 )
         except Exception as exc:  # noqa: BLE001
             self.journal.record("platform_scout", "error", error=str(exc))
@@ -647,18 +663,21 @@ class CentBotEngine:
                     )
                     row["status"] = "dry_run_accepted"
                 else:
-                    readiness = self.live_readiness()
-                    if not readiness.get("ready"):
-                        self.journal.record(
-                            "accept",
-                            "blocked",
-                            task_id=row["id"],
-                            blockers=readiness.get("blockers"),
-                        )
-                        continue
+                    # Live: always attempt real accept. Surface platform errors; never fake ok.
+                    # Force acceptor out of dry_run whenever intentional live (not controlled).
+                    self.acceptor.dry_run = False
+                    self.submitter.dry_run = False
+                    self.config.set("analysis.auto_accept", True)
+                    if isinstance(self.acceptor.config, dict):
+                        self.acceptor.config["auto_accept"] = True
                     accept = self.acceptor.accept({**row, "status": "eligible", "_task": task_obj})
                     if not accept.get("ok") or accept.get("mode") == "dry_run":
-                        self.journal.record("accept", "skipped", task_id=row["id"], result=accept)
+                        self.journal.record("accept", "error", task_id=row["id"], result=accept)
+                        self.db.add_alert(
+                            "warning",
+                            f"Accept failed {row.get('platform')}:{row.get('external_id')} — {accept.get('error') or accept.get('reason') or accept}",
+                            source="accept",
+                        )
                         # Skip to next suitable task instead of faking success
                         continue
                     self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))

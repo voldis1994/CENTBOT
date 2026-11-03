@@ -33,7 +33,16 @@ def _read_state() -> dict[str, Any]:
 
 
 def setup_incomplete() -> bool:
-    return not SetupProgress().is_setup_complete() and not (ROOT / "config" / "local.yaml").exists()
+    """Incomplete unless wizard wrote local.yaml; on Windows also require SETUP verify."""
+    has_local = (ROOT / "config" / "local.yaml").exists()
+    if not has_local:
+        return True
+    if not sys.platform.startswith("win"):
+        return False
+    progress = SetupProgress()
+    if not progress.is_setup_complete():
+        return True
+    return False
 
 
 def already_running() -> bool:
@@ -83,19 +92,57 @@ def start_emulators(*, adb: str = "adb", emulator: str = "emulator", count: int 
     return {"planned": names, "started": started, "boots": boots, "devices": serials, "plan": plan}
 
 
+def _emulator_avd_name(adb: str, serial: str) -> str | None:
+    try:
+        out = subprocess.check_output(
+            [adb, "-s", serial, "emu", "avd", "name"],
+            text=True,
+            timeout=10,
+            stderr=subprocess.DEVNULL,
+        )
+        # First non-empty line is the AVD name; ignore "OK"
+        for line in out.splitlines():
+            name = line.strip()
+            if name and name.upper() != "OK":
+                return name
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 def stop_centbot_emulators(*, adb: str = "adb") -> dict[str, Any]:
-    """Stop only emulators that look like CENTBOT AVDs / emulator consoles."""
+    """Stop ONLY emulators whose AVD name is CENTBOT_ANDROID_* — never foreign AVDs."""
+    from centbot.windows.avd import AVD_NAMES
+
     killed: list[str] = []
+    skipped: list[dict[str, str]] = []
     try:
         from centbot.android.adb import devices
 
         for serial in devices(adb):
-            if serial.startswith("emulator-"):
+            if not str(serial).startswith("emulator-"):
+                continue
+            avd = _emulator_avd_name(adb, serial)
+            if avd and avd in AVD_NAMES:
                 subprocess.run([adb, "-s", serial, "emu", "kill"], capture_output=True, timeout=20, check=False)
-                killed.append(serial)
+                killed.append(f"{serial}:{avd}")
+            else:
+                skipped.append({"serial": serial, "avd": avd or "unknown", "reason": "not_centbot_avd"})
+        # Also terminate tracked Popen PIDs from launcher state
+        state = _read_state()
+        for item in state.get("emulator_pids") or []:
+            try:
+                pid = int(item.get("pid"))
+                if sys.platform.startswith("win"):
+                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+                else:
+                    os.kill(pid, 15)
+                killed.append(f"pid:{pid}")
+            except (TypeError, ValueError, OSError):
+                continue
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc), "killed": killed}
-    return {"ok": True, "killed": killed}
+        return {"ok": False, "error": str(exc), "killed": killed, "skipped": skipped}
+    return {"ok": True, "killed": killed, "skipped": skipped}
 
 
 def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dict[str, Any]:
@@ -175,27 +222,32 @@ def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
     config = Config()
     audit = audit_config(config)
     out: dict[str, Any] = {"consistency": audit}
-    android_on = bool(config.get("android.enabled", False))
+    android_on = bool(config.get("android.enabled", True))
     if not skip_emulators and android_on:
         count = int(config.get("android.max_emulators", 4) or 4)
-        out["emulators"] = start_emulators(
+        emu = start_emulators(
             adb=str(config.get("android.adb_path", "adb")),
             emulator=str(config.get("android.emulator_path", "emulator")),
             count=count,
         )
+        out["emulators"] = emu
+        # Persist CENTBOT emulator PIDs so STOP only kills ours
+        state = _read_state()
+        state["emulator_pids"] = [
+            {"avd": r.get("avd"), "pid": r.get("pid")} for r in (emu.get("started") or []) if r.get("ok") and r.get("pid")
+        ]
+        _write_state(state)
     elif not android_on:
         out["emulators"] = {
             "ok": True,
             "skipped": True,
             "reason": "android.enabled_is_false",
-            "hint": "Set android.enabled: true in config/local.yaml (wizard does this)",
+            "hint": "Set android.enabled: true in config/local.yaml",
         }
-    # Refuse to start intentional live if consistency blockers say not ready
+    # Live: never refuse start — print consistency so real errors are visible
     if config.is_live() and not audit.get("ready_for_live"):
-        out["ok"] = False
-        out["error"] = "live_not_ready"
-        out["hint"] = "Fix blockers (mode/auto_accept/wallet) or start with system.mode: dry_run"
-        return out
+        out["warning"] = "live_partial_readiness"
+        out["consistency"] = audit
     out["engine"] = start_engine(open_dashboard=True)
     out["ok"] = bool(out["engine"].get("ok"))
     return out

@@ -1,7 +1,7 @@
 # CENTBOT — live platform configuration (no demo catalogs)
 system:
   name: CENTBOT
-  mode: dry_run  # dry_run = discover/analyze/execute locally, no claim/submit | live = real claims
+  mode: live  # live = real claims/submits; use --controlled-live / --demo for dry practice
   timezone: Europe/London
   cycle_interval_seconds: 60
   # Must be >= android.max_emulators so 4 Android workers are not starved by the pool
@@ -94,7 +94,8 @@ discovery:
   min_reward: 0.5
   currencies: [USD, USDC, EUR, GBP, USDT, BTC, ETH]
   duplicate_similarity_threshold: 0.92
-  auto_register_allowed: false  # wizard opt-in only
+  auto_register_allowed: true
+  auto_discover_platforms: true  # probe known public boards and attach reachable extras
 
 analysis:
   min_expected_profit: 0.25
@@ -102,7 +103,7 @@ analysis:
   max_estimated_hours: 8
   reject_unfunded: true
   reject_untrusted_payer_below: 0.25
-  auto_accept: false  # live claims only when true AND system.mode=live
+  auto_accept: true  # required for live claims/submits
 
 finance:
   crypto_wallet_public: ""  # public receive / payout address
@@ -121,9 +122,7 @@ finance:
   min_confirmations: 1
 
 android:
-  # Default false until wizard/SETUP writes local.yaml (enabled: true + AVDs).
-  # If max_emulators>=1 but enabled=false, START skips fleet and AndroidExecutor refuses tasks.
-  enabled: false
+  enabled: true
   adb_path: adb
   emulator_path: emulator
   max_emulators: 4

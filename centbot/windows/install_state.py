@@ -76,7 +76,28 @@ class SetupProgress:
         return bool(st and st.get("ok"))
 
     def is_setup_complete(self) -> bool:
-        return bool(self._data.get("completed"))
+        """True only when verify marked completed — local.yaml alone is not enough."""
+        if not bool(self._data.get("completed")):
+            return False
+        verify = self.status("verify") or {}
+        return bool(verify.get("ok"))
+
+    def missing_required(self) -> list[str]:
+        required = [
+            "hw_check",
+            "python_venv",
+            "git",
+            "pip_requirements",
+            "playwright_browsers",
+            "android_sdk",
+            "android_avds",
+            "wizard",
+            "verify",
+        ]
+        return [c for c in required if not self.is_done(c)]
 
     def report(self) -> dict[str, Any]:
-        return dict(self._data)
+        data = dict(self._data)
+        data["missing_required"] = self.missing_required()
+        data["setup_complete"] = self.is_setup_complete()
+        return data

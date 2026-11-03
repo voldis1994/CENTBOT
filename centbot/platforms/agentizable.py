@@ -111,6 +111,17 @@ class AgentizableConnector(PlatformConnector):
             raw={"source": "agentizable", "bounty": item},
         )
 
+    def register_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": "human_authorization_required",
+            "platform": self.name,
+            "status": "needs_user",
+            "user_action": "complete_first_party_wallet_auth_on_agentizable",
+            "handoff_url": "https://agentizable.ai/earn.html",
+            "hint": "Agentizable has no silent auto-register; use their first-party authorization URL",
+        }
+
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
         # Agentizable requires first-party authorization_url confirmation — never silent wallet signing.
         return {

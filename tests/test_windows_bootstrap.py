@@ -79,6 +79,8 @@ def test_wizard_validation_and_forbidden_secrets(tmp_path: Path):
     assert validate_field("email", "bad") == "invalid_email"
     assert validate_field("iban", "LV12TEST")  # may be invalid length
     assert validate_field("mode", "live") is None
+
+    # Forbidden secrets never write — even if allow_partial is True
     bad = apply_answers(
         {
             "full_name": "A B",
@@ -94,7 +96,19 @@ def test_wizard_validation_and_forbidden_secrets(tmp_path: Path):
         allow_partial=True,
     )
     assert bad["ok"] is False
+    assert bad.get("wrote") is False
     assert bad["errors"]["bank_password"] == "forbidden_secret"
+    assert not (tmp_path / "config" / "local.yaml").exists()
+
+    # Incomplete answers must not create local.yaml
+    incomplete = apply_answers(
+        {"mode": "live", "email": "x@y.lv"},
+        root=tmp_path,
+        allow_partial=False,
+    )
+    assert incomplete["ok"] is False
+    assert incomplete.get("wrote") is False
+    assert not (tmp_path / "config" / "local.yaml").exists()
 
     ok = apply_answers(
         {
@@ -105,15 +119,18 @@ def test_wizard_validation_and_forbidden_secrets(tmp_path: Path):
             "iban": "LV97HABA0012345678910",
             "bank_currency": "EUR",
             "crypto_wallet": "0x" + "ab" * 20,
-            "mode": "dry_run",
+            "mode": "live",
             "min_profit": "0.5",
             "auto_register": False,
         },
         root=tmp_path,
         allow_partial=False,
     )
-    assert ok["ok"] is True
+    assert ok["ok"] is True and ok.get("wrote") is True
     local = yaml.safe_load((tmp_path / "config" / "local.yaml").read_text(encoding="utf-8"))
+    assert local["system"]["mode"] == "live"
+    assert local["analysis"]["auto_accept"] is True
+    assert local["android"]["enabled"] is True
     assert local["android"]["max_emulators"] == 4
     assert local["android"]["avds"][0] == "CENTBOT_ANDROID_01"
     assert local["finance"]["simulate_rewards_in_dry_run"] is False
@@ -177,10 +194,33 @@ def test_bat_files_exist():
     assert (root / "STOP.bat").exists()
     setup = (root / "SETUP.bat").read_text(encoding="utf-8", errors="ignore")
     assert "centbot.windows.setup" in setup
+    assert "winget install" in setup and "Python.Python" in setup
     start = (root / "START.bat").read_text(encoding="utf-8", errors="ignore")
     assert "SETUP.bat" in start
+    assert "setup_incomplete" in start
     stop = (root / "STOP.bat").read_text(encoding="utf-8", errors="ignore")
     assert "centbot.windows.stop" in stop
+
+
+def test_stop_emulators_only_targets_centbot_avds(monkeypatch):
+    from centbot.windows import launcher
+
+    monkeypatch.setattr("centbot.android.adb.devices", lambda adb="adb": ["emulator-5554", "emulator-5556"])
+    names = {"emulator-5554": "CENTBOT_ANDROID_01", "emulator-5556": "Pixel_6_API_33"}
+    monkeypatch.setattr(launcher, "_emulator_avd_name", lambda adb, serial: names.get(serial))
+    killed_cmds: list = []
+
+    def fake_run(cmd, **kwargs):
+        killed_cmds.append(cmd)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    monkeypatch.setattr(launcher, "_read_state", lambda: {})
+    out = launcher.stop_centbot_emulators()
+    assert out["ok"] is True
+    assert any("emulator-5554" in k for k in out["killed"])
+    assert any(s.get("avd") == "Pixel_6_API_33" for s in out["skipped"])
+    assert not any("emulator-5556" in str(c) for c in killed_cmds)
 
 
 def test_build_local_yaml_defaults():

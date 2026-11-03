@@ -143,7 +143,7 @@ def test_ops_report_counts_only_ledger_backed_income(tmp_path: Path):
     assert float(report["finances"]["total_profit"]) > 0
 
 
-def test_cli_mode_live_alone_does_not_force_dry_run(tmp_path: Path, monkeypatch):
+def test_cli_mode_live_alone_does_not_force_dry_run(tmp_path: Path, monkeypatch, capsys):
     from centbot import __main__ as cli
 
     calls: dict = {}
@@ -160,19 +160,24 @@ def test_cli_mode_live_alone_does_not_force_dry_run(tmp_path: Path, monkeypatch)
             return None
 
         def cycle_once(self):
+            calls["cycled"] = True
             return {"ok": True}
 
         def run_forever(self):
             calls["forever"] = True
 
     monkeypatch.setattr(cli, "CentBotEngine", FakeEngine)
-    # Intentional live without --controlled-live must keep live and refuse to run when not ready
+    # Live with partial readiness warns then continues — never hard-stops into fake idle
     rc = cli.main(["--mode", "live", "--once"])
     assert calls["mode"] == "live"
-    assert rc == 2
+    assert calls.get("cycled") is True
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "live_partial_readiness" in out
 
 
-def test_schedule_skips_accept_when_live_not_ready(tmp_path: Path):
+def test_schedule_live_attempts_accept_and_surfaces_failure(tmp_path: Path):
+    """Live must attempt real claims even when readiness is incomplete — so failures are visible."""
     engine = _mk_engine(tmp_path, mode="live", auto_accept=False, wallet="")
     engine.db.execute(
         "INSERT INTO tasks(id, platform, external_id, title, description, category, status, "
@@ -182,13 +187,13 @@ def test_schedule_skips_accept_when_live_not_ready(tmp_path: Path):
     )
     accept_calls: list = []
 
-    class Fake:
+    class FakeFail:
         name = "jobbi"
         enabled = True
 
         def accept_task(self, task):
             accept_calls.append(task)
-            return {"ok": True}
+            return {"ok": False, "error": "platform_auth_required"}
 
         def list_tasks(self):
             return []
@@ -199,13 +204,50 @@ def test_schedule_skips_accept_when_live_not_ready(tmp_path: Path):
         def check_automation_rules(self):
             return {"automation_allowed": True}
 
-    engine.platforms = {"jobbi": Fake()}
+    engine.platforms = {"jobbi": FakeFail()}
     engine.acceptor.platforms = engine.platforms
     launched = engine.schedule_eligible()
     assert launched == 0
-    assert accept_calls == []
+    assert len(accept_calls) == 1  # real claim attempted
     row = engine.db.fetchone("SELECT status FROM tasks WHERE id=?", ("t-live",))
     assert row["status"] == "eligible"  # never faked as accepted
+    alerts = engine.db.fetchall("SELECT message FROM alerts")
+    assert any("Accept failed" in (a["message"] or "") for a in alerts)
+    engine.shutdown()
+
+
+def test_schedule_live_accepts_when_platform_ok(tmp_path: Path):
+    engine = _mk_engine(tmp_path, mode="live", auto_accept=False, wallet="0x" + "11" * 20)
+    engine.db.execute(
+        "INSERT INTO tasks(id, platform, external_id, title, description, category, status, "
+        "reward_amount, reward_currency, priority, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))",
+        ("t-ok", "jobbi", "ext-2", "real gig", "do work", "text", "eligible", 10.0, "USD", 90),
+    )
+
+    class FakeOk:
+        name = "jobbi"
+        enabled = True
+
+        def accept_task(self, task):
+            return {"ok": True, "claim_id": "c1"}
+
+        def list_tasks(self):
+            return []
+
+        def health(self):
+            return {"ok": True, "platform": "jobbi"}
+
+        def check_automation_rules(self):
+            return {"automation_allowed": True}
+
+    engine.platforms = {"jobbi": FakeOk()}
+    engine.acceptor.platforms = engine.platforms
+    launched = engine.schedule_eligible()
+    assert launched == 1
+    row = engine.db.fetchone("SELECT status FROM tasks WHERE id=?", ("t-ok",))
+    # Accept succeeded; pool may already advance eligible→accepted→running
+    assert row["status"] in {"accepted", "running", "needs_repair", "failed"}
     engine.shutdown()
 
 

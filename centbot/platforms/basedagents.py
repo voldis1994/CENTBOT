@@ -91,9 +91,43 @@ class BasedAgentsConnector(PlatformConnector):
             )
         return out
 
+    def register_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Register a BasedAgents identity when keypair can be created/saved."""
+        from pathlib import Path
+
+        from centbot.platforms.auth_basedagents import generate_identity, register_agent, save_identity_file
+
+        try:
+            identity = self.identity or generate_identity()
+            identity = register_agent(
+                self.client,
+                name=str(payload.get("name") or "CENTBOT"),
+                description="CENTBOT autonomous worker",
+                capabilities=["code", "data", "content", "research", "automation"],
+                identity=identity,
+            )
+            key_path = Path(str(self.config.get("keypair_path") or "data/basedagents-keypair.json"))
+            save_identity_file(identity, key_path)
+            self.identity = identity
+            return {
+                "ok": True,
+                "status": "registered",
+                "platform": self.name,
+                "agent_id": identity.agent_id,
+                "keypair": str(key_path),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "status": "error", "platform": self.name}
+
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
         from centbot.platforms.response import interpret_platform_result
 
+        if not self.identity:
+            return {
+                "ok": False,
+                "error": "basedagents_identity_missing",
+                "user_action": "run_python_-m_centbot_--register-basedagents_NAME",
+            }
         path = f"/v1/tasks/{task.external_id}/claim"
         try:
             result = self._signed("POST", path, {})

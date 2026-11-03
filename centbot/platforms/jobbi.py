@@ -110,6 +110,16 @@ class JobbiConnector(PlatformConnector):
             "poll_etiquette": "At most hourly; use ETag/If-None-Match.",
         }
 
+    def register_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": "index_only_no_accounts",
+            "platform": self.name,
+            "status": "error",
+            "user_action": "register_on_originating_board_then_configure_that_connector",
+            "hint": "Jobbi is a read-only gig index — it has no accounts or payouts",
+        }
+
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
         # Jobbi cannot claim; return handoff to originating board.
         return {

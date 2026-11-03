@@ -126,23 +126,20 @@ def apply_answers(
     *,
     root: Path | None = None,
     store_secrets: bool = True,
-    allow_partial: bool = True,
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
+    """Write local.yaml only when validation passes (unless allow_partial explicitly set)."""
     root = Path(root) if root else ROOT
     errors: dict[str, str] = {}
 
     required_text = ["full_name", "country", "email", "bank_holder", "iban", "crypto_wallet", "mode"]
     for key in required_text:
         raw = str(answers.get(key) or "").strip()
-        if not raw and not allow_partial:
+        if not raw:
             errors[key] = f"{key}_required"
     for key in ("email", "phone", "iban", "crypto_wallet", "mode", "min_profit"):
         raw = str(answers.get(key) or "")
-        if not raw.strip() and key in OPTIONAL_KEYS:
-            continue
-        if not raw.strip() and key == "min_profit":
-            continue
-        if not raw.strip() and allow_partial and key in required_text:
+        if not raw.strip() and (key in OPTIONAL_KEYS or key == "min_profit" or key == "phone"):
             continue
         err = validate_field(key, raw, required=False)
         if err:
@@ -152,12 +149,21 @@ def apply_answers(
         if answers.get(bad):
             errors[bad] = "forbidden_secret"
 
+    # Strict: never write a broken live config
     if errors and not allow_partial:
-        return {"ok": False, "errors": errors}
+        return {"ok": False, "errors": errors, "path": None, "wrote": False}
     if any(v == "forbidden_secret" for v in errors.values()):
-        return {"ok": False, "errors": errors}
+        return {"ok": False, "errors": errors, "path": None, "wrote": False}
 
     local = build_local_yaml(answers)
+    # Live mode requires a real-looking wallet
+    if str(local.get("system", {}).get("mode")).lower() == "live":
+        wallet = str((local.get("finance") or {}).get("crypto_wallet_public") or "")
+        if not wallet or wallet.upper().startswith("0XYOUR") or "PLACEHOLDER" in wallet.upper():
+            return {"ok": False, "errors": {"crypto_wallet": "live_requires_real_wallet"}, "wrote": False}
+        local["analysis"]["auto_accept"] = True
+        local["android"]["enabled"] = True
+
     path = write_local_yaml(local, root / "config" / "local.yaml")
 
     secret_keys_written: list[str] = []
@@ -176,6 +182,7 @@ def apply_answers(
 
     return {
         "ok": True,
+        "wrote": True,
         "path": str(path),
         "errors": {k: v for k, v in errors.items() if v != "forbidden_secret"},
         "local": local,
@@ -223,7 +230,7 @@ def run_interactive_wizard(*, root: Path | None = None) -> dict[str, Any]:
     answers["auto_accept"] = _prompt(
         "Live auto-accept uzdevumus (y/n)", aa_default
     ).lower().startswith("y")
-    return apply_answers(answers, root=root, allow_partial=True)
+    return apply_answers(answers, root=root, allow_partial=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -238,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         print(yaml.safe_dump(result, sort_keys=False, allow_unicode=True))
         return 0 if result.get("ok") else 1
     result = run_interactive_wizard()
-    print(yaml.safe_dump({"ok": result.get("ok"), "path": result.get("path"), "errors": result.get("errors")}, allow_unicode=True))
+    print(yaml.safe_dump({"ok": result.get("ok"), "path": result.get("path"), "errors": result.get("errors"), "wrote": result.get("wrote", result.get("ok"))}, allow_unicode=True))
     return 0 if result.get("ok") else 1
 
 

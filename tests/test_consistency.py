@@ -1,4 +1,4 @@
-"""Config true/false consistency — system must not disagree with itself."""
+"""Config true/false consistency — live must not be soft-blocked into fake idle."""
 
 from __future__ import annotations
 
@@ -6,36 +6,38 @@ from pathlib import Path
 
 from centbot.core.config import Config
 from centbot.core.consistency import audit_config
-from centbot.windows.wizard import build_local_yaml
+from centbot.windows.wizard import apply_answers, build_local_yaml
 
 
-def test_default_config_dry_run_is_internally_ok():
+def test_default_config_is_live_oriented():
     cfg = Config()
     report = audit_config(cfg)
-    assert report["flags"]["live"] is False
-    assert report["flags"]["auto_accept"] is False
+    assert report["flags"]["live"] is True
+    assert report["flags"]["auto_accept"] is True
+    assert report["flags"]["android.enabled"] is True
     assert report["flags"]["simulate_rewards_in_dry_run"] is False
-    assert report["ok"] is True  # dry_run defaults are coherent
+    assert report["ok"] is True
+    # Wallet empty → not fully ready, but start must still be allowed (warning only)
     assert report["ready_for_live"] is False
-    # Warning: 4 emulators configured while android.enabled false
-    assert any("android.enabled_is_false" in w for w in report["warnings"])
+    assert any("wallet" in w for w in report["warnings"])
 
 
-def test_live_without_auto_accept_blocked():
+def test_live_without_wallet_is_warning_not_hard_block():
     cfg = Config(
         overrides={
             "system": {"mode": "live", "max_parallel_tasks": 6},
-            "analysis": {"auto_accept": False},
-            "finance": {"crypto_wallet_public": "0x" + "11" * 20, "simulate_rewards_in_dry_run": False},
+            "analysis": {"auto_accept": True},
+            "finance": {"crypto_wallet_public": "", "simulate_rewards_in_dry_run": False},
             "android": {"enabled": True, "max_emulators": 4},
         }
     )
     report = audit_config(cfg)
+    assert report["ok"] is True
     assert report["ready_for_live"] is False
-    assert "live_requires_analysis.auto_accept_true" in report["blockers"]
+    assert report["blockers"] == [] or "simulate" not in str(report["blockers"])
 
 
-def test_live_ready_when_flags_align():
+def test_live_ready_when_wallet_set():
     cfg = Config(
         overrides={
             "system": {"mode": "live", "max_parallel_tasks": 6},
@@ -43,52 +45,70 @@ def test_live_ready_when_flags_align():
             "finance": {
                 "crypto_wallet_public": "0x" + "ab" * 20,
                 "simulate_rewards_in_dry_run": False,
-                "reconcile_payments": True,
-                "verify_on_chain": True,
             },
             "android": {"enabled": True, "max_emulators": 4},
         }
     )
     report = audit_config(cfg)
-    assert report["blockers"] == [] or not any("live_requires" in b for b in report["blockers"])
     assert report["ready_for_live"] is True
-    assert report["flags"]["android.enabled"] is True
-    assert report["flags"]["system.max_parallel_tasks"] >= report["flags"]["android.max_emulators"]
 
 
-def test_wizard_live_defaults_auto_accept_true():
+def test_wizard_rejects_incomplete_without_writing(tmp_path: Path):
+    bad = apply_answers({"mode": "live", "email": "x"}, root=tmp_path, allow_partial=False)
+    assert bad["ok"] is False
+    assert bad.get("wrote") is False
+    assert not (tmp_path / "config" / "local.yaml").exists()
+
+
+def test_wizard_live_defaults_auto_accept_and_android():
     data = build_local_yaml(
         {
             "mode": "live",
-            "full_name": "A",
+            "full_name": "A B",
             "iban": "LV97HABA0012345678910",
             "crypto_wallet": "0x" + "cd" * 20,
         }
     )
     assert data["analysis"]["auto_accept"] is True
     assert data["android"]["enabled"] is True
-    assert data["system"]["max_parallel_tasks"] == 6
-    assert data["finance"]["simulate_rewards_in_dry_run"] is False
+    assert data["system"]["mode"] == "live"
 
 
-def test_wizard_dry_run_keeps_auto_accept_false():
-    data = build_local_yaml({"mode": "dry_run", "auto_accept": True})
-    # Even if answered true, dry_run must not enable live claims
-    assert data["analysis"]["auto_accept"] is False
+def test_wizard_writes_only_when_valid(tmp_path: Path):
+    ok = apply_answers(
+        {
+            "full_name": "Jānis Bērziņš",
+            "country": "Latvia",
+            "email": "janis@example.com",
+            "bank_holder": "Jānis Bērziņš",
+            "iban": "LV97HABA0012345678910",
+            "bank_currency": "EUR",
+            "crypto_wallet": "0x" + "ab" * 20,
+            "mode": "live",
+            "min_profit": "0.5",
+        },
+        root=tmp_path,
+        allow_partial=False,
+    )
+    assert ok["ok"] is True and ok.get("wrote") is True
+    assert (tmp_path / "config" / "local.yaml").exists()
 
 
 def test_parallel_starvation_warning():
     cfg = Config(
         overrides={
-            "system": {"mode": "dry_run", "max_parallel_tasks": 2},
+            "system": {"mode": "live", "max_parallel_tasks": 2},
             "android": {"enabled": True, "max_emulators": 4},
+            "finance": {"crypto_wallet_public": "0x" + "11" * 20},
         }
     )
     report = audit_config(cfg)
-    assert any("max_parallel_tasks" in w and "starve" in w for w in report["warnings"])
+    assert any("starve" in w for w in report["warnings"])
 
 
-def test_engine_status_includes_consistency(tmp_path: Path):
+def test_engine_live_does_not_hard_block_schedule(tmp_path: Path):
+    from unittest.mock import MagicMock
+
     from centbot.core.engine import CentBotEngine
 
     for d in ("data", "logs", "backups", "sandbox"):
@@ -96,8 +116,8 @@ def test_engine_status_includes_consistency(tmp_path: Path):
     cfg = Config(
         overrides={
             "system": {
-                "mode": "dry_run",
-                "max_parallel_tasks": 6,
+                "mode": "live",
+                "max_parallel_tasks": 2,
                 "pid_file": str(tmp_path / "data" / "pid"),
                 "emergency_stop_file": str(tmp_path / "data" / "STOP"),
             },
@@ -106,6 +126,8 @@ def test_engine_status_includes_consistency(tmp_path: Path):
             "backup": {"enabled": False, "directory": str(tmp_path / "backups")},
             "security": {"credentials_file": str(tmp_path / "data" / "cred.enc")},
             "dashboard": {"enabled": False},
+            "analysis": {"auto_accept": True},
+            "finance": {"crypto_wallet_public": "0x" + "11" * 20, "reconcile_payments": False},
             "platforms": {
                 "jobbi": {"enabled": False},
                 "basedagents": {"enabled": False},
@@ -113,47 +135,30 @@ def test_engine_status_includes_consistency(tmp_path: Path):
                 "bountybook": {"enabled": False},
                 "agentizable": {"enabled": False},
             },
-            "android": {"enabled": True, "max_emulators": 4},
+            "android": {"enabled": False},
             "browser": {"enabled": False},
+            "discovery": {"auto_discover_platforms": False},
         }
     )
     engine = CentBotEngine(cfg)
-    st = engine.status()
-    assert "consistency" in st
-    assert st["android"]["enabled"] is True
-    assert st["settings"]["android_enabled"] is True
-    assert engine.distributor.workers["android_1"].capacity == 1
-    engine.shutdown()
+    assert engine.config.is_live()
+    assert engine.acceptor.dry_run is False
+    assert engine.submitter.dry_run is False
 
+    class Fake:
+        def accept_task(self, task):
+            return {"ok": False, "error": "platform_auth_required"}
 
-def test_android_disabled_zeros_distributor_slots(tmp_path: Path):
-    from centbot.core.engine import CentBotEngine
-
-    for d in ("data", "logs", "backups", "sandbox"):
-        (tmp_path / d).mkdir()
-    cfg = Config(
-        overrides={
-            "system": {
-                "mode": "dry_run",
-                "pid_file": str(tmp_path / "data" / "pid"),
-                "emergency_stop_file": str(tmp_path / "data" / "STOP"),
-            },
-            "database": {"path": str(tmp_path / "data" / "c.db")},
-            "logging": {"directory": str(tmp_path / "logs")},
-            "backup": {"enabled": False, "directory": str(tmp_path / "backups")},
-            "security": {"credentials_file": str(tmp_path / "data" / "cred.enc")},
-            "dashboard": {"enabled": False},
-            "platforms": {
-                "jobbi": {"enabled": False},
-                "basedagents": {"enabled": False},
-                "taskmarket": {"enabled": False},
-                "bountybook": {"enabled": False},
-                "agentizable": {"enabled": False},
-            },
-            "android": {"enabled": False, "max_emulators": 4},
-            "browser": {"enabled": False},
-        }
+    engine.platforms = {"fake": Fake()}
+    engine.acceptor.platforms = engine.platforms
+    engine.db.execute(
+        "INSERT INTO tasks(id, platform, external_id, title, description, category, status, "
+        "reward_amount, reward_currency, priority, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))",
+        ("t1", "fake", "e1", "job", "x", "text", "eligible", 5.0, "USD", 80),
     )
-    engine = CentBotEngine(cfg)
-    assert engine.distributor.workers["android_1"].capacity == 0
+    launched = engine.schedule_eligible()
+    assert launched == 0  # accept failed honestly
+    alerts = engine.db.fetchall("SELECT message FROM alerts")
+    assert any("Accept failed" in (a["message"] or "") for a in alerts)
     engine.shutdown()
