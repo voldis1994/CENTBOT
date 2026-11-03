@@ -232,3 +232,43 @@ def test_build_local_yaml_defaults():
     data = build_local_yaml({"mode": "live", "auto_accept": True, "iban": "LV00", "crypto_wallet": "0x1"})
     assert data["system"]["mode"] == "live"
     assert data["android"]["max_emulators"] == 4
+
+
+def test_verify_core_ok_without_docker_android(tmp_path: Path, monkeypatch):
+    """Missing Docker/AVD must not fail core SETUP — live START must remain possible."""
+    monkeypatch.setattr("centbot.windows.installer.which", lambda name: "/usr/bin/git" if name == "git" else None)
+    monkeypatch.setattr(
+        "centbot.windows.installer.WindowsSetup._playwright_ready",
+        lambda self: {"ok": True, "module": True},
+    )
+    setup = WindowsSetup(
+        root=tmp_path,
+        progress=SetupProgress(tmp_path / "progress.json"),
+        runner=lambda cmd, opts=None: {"ok": False, "stdout": "", "stderr": "missing"},
+        assume_yes=True,
+    )
+    report = setup.verify_all()
+    assert report["core_ok"] is True
+    assert report["ok"] is True
+    assert report["docker_ok"] is False
+    assert report["android_ok"] is False
+    assert report["full_ok"] is False
+    assert any("docker" in w for w in report["warnings"])
+    assert setup.progress.is_setup_complete() is True
+
+
+def test_setup_incomplete_only_when_local_yaml_missing(tmp_path: Path, monkeypatch):
+    from centbot.windows import launcher
+
+    monkeypatch.setattr(launcher, "ROOT", tmp_path)
+    assert launcher.setup_incomplete() is True
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "local.yaml").write_text("system: {mode: live}\n", encoding="utf-8")
+    assert launcher.setup_incomplete() is False
+
+
+def test_setup_bat_treats_wizard_success_as_success():
+    setup = (Path(__file__).resolve().parents[1] / "SETUP.bat").read_text(encoding="utf-8", errors="ignore")
+    assert "WIZ_EC" in setup
+    assert "optional components incomplete" in setup
+    assert "Config OK" in setup

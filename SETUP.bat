@@ -92,18 +92,31 @@ if errorlevel 1 (
 
 echo [CENTBOT] Running hardware check + component install ^(assume-yes for missing packages^)...
 "%PY%" -m centbot.windows.setup --yes %*
-set "EC=%ERRORLEVEL%"
+set "SETUP_EC=%ERRORLEVEL%"
 
 echo.
 echo [CENTBOT] First-run / update configuration wizard ^(strict validation^)...
 "%PY%" -m centbot.windows.wizard
-if errorlevel 1 (
+set "WIZ_EC=%ERRORLEVEL%"
+if not "%WIZ_EC%"=="0" (
   echo [CENTBOT] Wizard FAILED — config/local.yaml was NOT written with invalid data.
   echo           Fix inputs and re-run: "%PY%" -m centbot.windows.wizard
-  set "EC=1"
 )
 
+REM Final exit: wizard failure is hard; missing Docker/Android alone is NOT
+set "EC=0"
+if not "%WIZ_EC%"=="0" set "EC=1"
+if not "%SETUP_EC%"=="0" if "%WIZ_EC%"=="0" (
+  echo [CENTBOT] NOTE: optional components incomplete ^(Docker/Android^), but config was written.
+  echo           Live engine can still start via START.bat — emulator/sandbox lanes may be limited.
+  set "EC=0"
+)
+if not "%SETUP_EC%"=="0" if not "%WIZ_EC%"=="0" set "EC=1"
+
 echo.
+if exist "config\local.yaml" if "%WIZ_EC%"=="0" (
+  echo [CENTBOT] Config OK: config\local.yaml
+)
 if "%EC%"=="0" (
   echo [CENTBOT] SETUP finished. Next: START.bat
 ) else (

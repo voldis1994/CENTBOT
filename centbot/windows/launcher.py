@@ -12,7 +12,6 @@ from typing import Any
 
 from centbot.core.config import ROOT
 from centbot.windows.avd import AVD_NAMES, list_avds, plan_emulator_count, wait_for_boot
-from centbot.windows.install_state import SetupProgress
 
 PID_FILE = ROOT / "data" / "centbot.pid"
 STATE_FILE = ROOT / "data" / "runtime" / "launcher_state.json"
@@ -33,16 +32,12 @@ def _read_state() -> dict[str, Any]:
 
 
 def setup_incomplete() -> bool:
-    """Incomplete unless wizard wrote local.yaml; on Windows also require SETUP verify."""
-    has_local = (ROOT / "config" / "local.yaml").exists()
-    if not has_local:
-        return True
-    if not sys.platform.startswith("win"):
-        return False
-    progress = SetupProgress()
-    if not progress.is_setup_complete():
-        return True
-    return False
+    """Incomplete only when config/local.yaml is missing.
+
+    Docker/Android gaps must NOT block START — live engine runs so platform
+    claim errors are visible; emulator/sandbox lanes skip with warnings.
+    """
+    return not (ROOT / "config" / "local.yaml").exists()
 
 
 def already_running() -> bool:
@@ -237,6 +232,9 @@ def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
             {"avd": r.get("avd"), "pid": r.get("pid")} for r in (emu.get("started") or []) if r.get("ok") and r.get("pid")
         ]
         _write_state(state)
+        # Missing AVDs are warnings — engine still starts for live PC claims
+        if any(not r.get("ok") for r in (emu.get("started") or [])):
+            out["warning_android"] = "some_avds_missing_or_failed_engine_still_starting"
     elif not android_on:
         out["emulators"] = {
             "ok": True,
