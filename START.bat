@@ -8,20 +8,41 @@ if exist data\EMERGENCY_STOP (
   exit /b 1
 )
 
-set "PY=python"
-where py >nul 2>&1 && set "PY=py -3"
+REM Prefer project venv created by SETUP.bat
+set "PY="
+if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
+if not defined PY (
+  where py >nul 2>&1 && set "PY=py -3"
+)
+if not defined PY (
+  where python >nul 2>&1 && set "PY=python"
+)
+if not defined PY (
+  echo [CENTBOT] Python not found. Run SETUP.bat first.
+  exit /b 1
+)
+
+REM If core deps missing, force SETUP before start (fixes bare Python / zip download)
+"%PY%" -c "import yaml" >nul 2>&1
+if errorlevel 1 (
+  echo [CENTBOT] Dependencies missing ^(no yaml^). Launching SETUP.bat ...
+  call "%~dp0SETUP.bat"
+  if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
+)
 
 REM Require completed SETUP (verify ok) — local.yaml alone is NOT enough on Windows
 if not exist data\setup\progress.json (
   echo [CENTBOT] SETUP not completed. Launching SETUP.bat ...
   call "%~dp0SETUP.bat"
+  if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
 )
 
-%PY% -c "from centbot.windows.launcher import setup_incomplete; import sys; sys.exit(1 if setup_incomplete() else 0)"
+"%PY%" -c "from centbot.windows.launcher import setup_incomplete; import sys; sys.exit(1 if setup_incomplete() else 0)"
 if errorlevel 1 (
   echo [CENTBOT] Installation incomplete ^(need SETUP verify + config\local.yaml^). Running SETUP.bat...
   call "%~dp0SETUP.bat"
-  %PY% -c "from centbot.windows.launcher import setup_incomplete; import sys; sys.exit(1 if setup_incomplete() else 0)"
+  if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
+  "%PY%" -c "from centbot.windows.launcher import setup_incomplete; import sys; sys.exit(1 if setup_incomplete() else 0)"
   if errorlevel 1 (
     echo [CENTBOT] Still incomplete after SETUP. Fix errors above, then re-run START.bat
     exit /b 2
@@ -40,7 +61,7 @@ if not exist sandbox mkdir sandbox
 if not exist data\runtime mkdir data\runtime
 
 echo [CENTBOT] Starting LIVE system via launcher...
-%PY% -m centbot.windows.start
+"%PY%" -m centbot.windows.start
 set "EC=%ERRORLEVEL%"
 if "%EC%"=="0" (
   echo [CENTBOT] Started. Control panel: http://127.0.0.1:8787/

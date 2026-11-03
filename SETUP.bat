@@ -41,23 +41,65 @@ if not defined PY (
   exit /b 1
 )
 
-echo [CENTBOT] Using: %PY%
+echo [CENTBOT] Bootstrap interpreter: %PY%
 %PY% --version
+if errorlevel 1 (
+  echo [CENTBOT] Python failed to start. Re-install Python and tick "Add to PATH".
+  pause
+  exit /b 1
+)
 
 if not exist data mkdir data
 if not exist data\setup mkdir data\setup
 if not exist logs mkdir logs
 
+REM --- Create project venv early (so deps are isolated and always found) ---
+if not exist ".venv\Scripts\python.exe" (
+  echo [CENTBOT] Creating .venv ...
+  %PY% -m venv .venv
+  if errorlevel 1 (
+    echo [CENTBOT] venv create failed — will install packages into the system Python instead.
+  )
+)
+if exist ".venv\Scripts\python.exe" (
+  set "PY=%CD%\.venv\Scripts\python.exe"
+  echo [CENTBOT] Using venv: %PY%
+)
+
+REM --- CRITICAL: install deps BEFORE any "python -m centbot..." import (needs PyYAML) ---
+echo [CENTBOT] Installing Python packages from requirements.txt ...
+"%PY%" -m pip install --upgrade pip
+if errorlevel 1 (
+  echo [CENTBOT] pip upgrade failed — continuing with existing pip
+)
+"%PY%" -m pip install -r "%CD%\requirements.txt"
+if errorlevel 1 (
+  echo [CENTBOT] Full requirements install failed — installing minimum bootstrap ^(PyYAML^)...
+  "%PY%" -m pip install "pyyaml>=6.0.1" "requests>=2.31.0" "flask>=3.0.0" "psutil>=5.9.8"
+  if errorlevel 1 (
+    echo [CENTBOT] CRITICAL: cannot install PyYAML. Check network / pip, then re-run SETUP.bat
+    pause
+    exit /b 1
+  )
+)
+
+"%PY%" -c "import yaml, requests, flask; print('[CENTBOT] Core imports OK')"
+if errorlevel 1 (
+  echo [CENTBOT] CRITICAL: yaml/requests/flask still missing after pip. Re-run SETUP.bat
+  pause
+  exit /b 1
+)
+
 echo [CENTBOT] Running hardware check + component install ^(assume-yes for missing packages^)...
-%PY% -m centbot.windows.setup --yes %*
+"%PY%" -m centbot.windows.setup --yes %*
 set "EC=%ERRORLEVEL%"
 
 echo.
 echo [CENTBOT] First-run / update configuration wizard ^(strict validation^)...
-%PY% -m centbot.windows.wizard
+"%PY%" -m centbot.windows.wizard
 if errorlevel 1 (
   echo [CENTBOT] Wizard FAILED — config/local.yaml was NOT written with invalid data.
-  echo           Fix inputs and re-run: %PY% -m centbot.windows.wizard
+  echo           Fix inputs and re-run: "%PY%" -m centbot.windows.wizard
   set "EC=1"
 )
 
