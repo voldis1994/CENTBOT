@@ -10,7 +10,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import yaml
+except ImportError as exc:  # pragma: no cover - SETUP.bat must install deps first
+    raise SystemExit(
+        "PyYAML missing. Re-run SETUP.bat (it installs requirements.txt before the wizard)."
+    ) from exc
 
 from centbot.core.config import ROOT
 from centbot.windows.install_state import SetupProgress

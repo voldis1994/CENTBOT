@@ -195,9 +195,14 @@ def test_bat_files_exist():
     setup = (root / "SETUP.bat").read_text(encoding="utf-8", errors="ignore")
     assert "centbot.windows.setup" in setup
     assert "winget install" in setup and "Python.Python" in setup
+    # Must pip-install BEFORE any python -m centbot import (PyYAML chicken/egg)
+    assert "pip install -r" in setup
+    assert setup.find("pip install -r") < setup.find("centbot.windows.setup")
+    assert ".venv" in setup
     start = (root / "START.bat").read_text(encoding="utf-8", errors="ignore")
     assert "SETUP.bat" in start
     assert "setup_incomplete" in start
+    assert ".venv\\Scripts\\python.exe" in start or ".venv/Scripts/python.exe" in start
     stop = (root / "STOP.bat").read_text(encoding="utf-8", errors="ignore")
     assert "centbot.windows.stop" in stop
 

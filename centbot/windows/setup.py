@@ -6,10 +6,26 @@ import argparse
 import json
 import sys
 
-from centbot.windows.installer import WindowsSetup
-
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "missing_pyyaml",
+                    "hint": "SETUP.bat must pip-install requirements.txt before this module. Re-run SETUP.bat.",
+                    "fix": f"{sys.executable} -m pip install -r requirements.txt",
+                },
+                indent=2,
+            )
+        )
+        return 1
+
+    from centbot.windows.installer import WindowsSetup
+
     p = argparse.ArgumentParser(description="CENTBOT Windows SETUP")
     p.add_argument("--yes", action="store_true", help="Confirm installs without prompts (admin still may be required)")
     p.add_argument("--ollama", action="store_true", help="Also install Ollama")
