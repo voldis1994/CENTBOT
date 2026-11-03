@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--live-status", action="store_true", help="Print live readiness blockers and exit")
     p.add_argument("--ops-report", action="store_true", help="Write/print operations evidence report")
     p.add_argument("--integrations", action="store_true", help="Verify live platform integrations")
+    p.add_argument(
+        "--dashboard-only",
+        action="store_true",
+        help="Serve the control panel and exit on Ctrl+C (no work cycle)",
+    )
     p.add_argument("--mode", choices=["dry_run", "live"], help="Override system.mode")
     p.add_argument(
         "--evidence-out",
@@ -95,6 +100,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.status:
         print(json.dumps(engine.status(), indent=2, default=str))
         return 0
+    if args.dashboard_only:
+        from centbot.dashboard.app import create_dashboard, start_dashboard_thread
+
+        host = str(config.get("dashboard.host", "127.0.0.1"))
+        port = int(config.get("dashboard.port", 8787))
+        # Bind all interfaces when host is localhost so cloud/browser testing can reach it
+        bind = "0.0.0.0" if host in {"127.0.0.1", "localhost"} else host
+        app = create_dashboard(
+            engine.status,
+            lambda: engine.emergency.trigger("dashboard"),
+            ack_alert=engine.acknowledge_alert,
+        )
+        # Warm status/system snapshot once for first paint
+        engine.monitor.snapshot()
+        engine._last_snapshot = engine.monitor.snapshot().to_dict()
+        start_dashboard_thread(app, bind, port)
+        print(json.dumps({"ok": True, "dashboard": f"http://{bind}:{port}/", "mode": config.get("system.mode")}, indent=2))
+        try:
+            import time
+
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            engine.shutdown()
+            return 0
     if args.live_status:
         print(json.dumps(engine.live_readiness(), indent=2, default=str))
         engine.shutdown()

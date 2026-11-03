@@ -215,6 +215,13 @@ class Database:
             (level, source, message, utcnow()),
         )
 
+    def acknowledge_alert(self, alert_id: int) -> bool:
+        row = self.fetchone("SELECT id FROM alerts WHERE id=? AND acknowledged=0", (alert_id,))
+        if not row:
+            return False
+        self.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (alert_id,))
+        return True
+
     def record_income(
         self,
         *,

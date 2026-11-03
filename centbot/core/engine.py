@@ -146,6 +146,8 @@ class CentBotEngine:
         self._last_snapshot: dict[str, Any] = {}
         self._controlled_mode = False
         self._bank_provider = None
+        self._integrations_cache: dict[str, Any] | None = None
+        self._integrations_cache_at = 0.0
         bank_base = str(self.config.get("finance.bank_provider_base_url") or "")
         bank_key_env = str(self.config.get("finance.bank_provider_api_key_env") or "")
         bank_key = self.config.env(bank_key_env) if bank_key_env else ""
@@ -173,7 +175,7 @@ class CentBotEngine:
         self._controlled_mode = True
         self.journal.record("controlled_mode", "enabled", mode="dry_run", claims_allowed=False)
 
-    def live_readiness(self) -> dict[str, Any]:
+    def live_readiness(self, integrations: dict[str, Any] | None = None) -> dict[str, Any]:
         """Honest gate: what is missing before real claims/submits/payments can succeed."""
         live = self.config.is_live()
         blockers: list[str] = []
@@ -190,7 +192,7 @@ class CentBotEngine:
             blockers.append("finance.crypto_wallet_public_missing")
         if bool(self.config.get("finance.simulate_rewards_in_dry_run", False)):
             blockers.append("simulate_rewards_forbidden")
-        integrations = self.integration_report()
+        integrations = integrations if integrations is not None else self.integration_report()
         claimable = []
         for name, info in integrations.items():
             if not info.get("ok"):
@@ -227,8 +229,25 @@ class CentBotEngine:
                     (name, 1, utcnow()),
                 )
 
-    def integration_report(self) -> dict[str, Any]:
-        return verify_integrations(self.platforms)
+    def integration_report(self, *, force: bool = False) -> dict[str, Any]:
+        # Short cache so the control panel can poll without re-probing every platform each tick
+        now = time.time()
+        if (
+            not force
+            and self._integrations_cache is not None
+            and (now - self._integrations_cache_at) < 45.0
+        ):
+            return self._integrations_cache
+        report = verify_integrations(self.platforms)
+        self._integrations_cache = report
+        self._integrations_cache_at = now
+        return report
+
+    def acknowledge_alert(self, alert_id: int) -> bool:
+        ok = self.db.acknowledge_alert(int(alert_id))
+        if ok:
+            self.journal.record("alert_ack", "ok", alert_id=alert_id)
+        return ok
 
     def status(self) -> dict[str, Any]:
         counts = {
@@ -236,36 +255,114 @@ class CentBotEngine:
             for r in self.db.fetchall("SELECT status, COUNT(*) AS c FROM tasks GROUP BY status")
         }
         alerts = self.db.fetchall(
-            "SELECT level, message, created_at FROM alerts WHERE acknowledged=0 ORDER BY id DESC LIMIT 10"
+            "SELECT id, level, message, source, created_at FROM alerts WHERE acknowledged=0 ORDER BY id DESC LIMIT 20"
         )
         recent = self.db.fetchall(
-            "SELECT title, platform, status, expected_profit FROM tasks ORDER BY updated_at DESC LIMIT 12"
+            "SELECT id, title, platform, status, reward_amount, reward_currency, expected_profit, "
+            "priority, updated_at FROM tasks ORDER BY updated_at DESC LIMIT 40"
         )
+        active = self.db.fetchall(
+            "SELECT id, title, platform, status, reward_amount, reward_currency, expected_profit, "
+            "priority, updated_at FROM tasks WHERE status IN "
+            "('eligible','accepted','running','submitted','verified','needs_repair','dry_run_accepted','dry_run_completed') "
+            "ORDER BY priority DESC, updated_at DESC LIMIT 40"
+        )
+        balances = self.ledger.balances()
+        income = self.ledger.income_history(15)
+        # Fresh monitor sample when idle (run_forever keeps _last_snapshot hot)
+        snap = self._last_snapshot or self.monitor.snapshot().to_dict()
+        journal_tail: list[dict[str, Any]] = []
+        journal_path = self.config.path_from("logging.directory", "logs") / "actions.jsonl"
+        if journal_path.exists():
+            try:
+                lines = journal_path.read_text(encoding="utf-8").splitlines()[-40:]
+                for line in lines:
+                    try:
+                        journal_tail.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+            except OSError:
+                pass
+        integrations = self.integration_report()
+        readiness = self.live_readiness(integrations)
+        platform_rows = self.ledger.platform_profitability()
+        awaiting_pay = counts.get("submitted", 0) + counts.get("verified", 0)
+        in_progress = (
+            counts.get("running", 0)
+            + counts.get("accepted", 0)
+            + counts.get("dry_run_accepted", 0)
+            + counts.get("needs_repair", 0)
+        )
+        completed = counts.get("completed", 0) + counts.get("paid", 0) + counts.get("dry_run_completed", 0)
+        bank_income = [r for r in income if r.get("kind") == "bank"]
+        crypto_income = [r for r in income if r.get("kind") == "crypto"]
         return {
             "mode": self.config.get("system.mode"),
+            "live": self.config.is_live() and not self._controlled_mode,
+            "controlled": self._controlled_mode,
             "cycles": self._cycles,
             "running": self._running,
             "emergency": self.emergency.is_active(),
-            "workers": {"active": self.pool.active_count(), "ids": self.pool.active_ids()},
+            "live_readiness": readiness,
+            "workers": {
+                "active": self.pool.active_count(),
+                "ids": self.pool.active_ids(),
+                "max": int(self.config.get("system.max_parallel_tasks", 4) or 4),
+            },
             "tasks": {
                 "total": sum(counts.values()),
                 "eligible": counts.get("eligible", 0) + counts.get("accepted", 0),
                 "running": counts.get("running", 0),
                 "completed": counts.get("completed", 0),
                 "rejected": counts.get("rejected", 0),
+                "awaiting_payment": awaiting_pay,
+                "in_progress": in_progress,
+                "done": completed,
+                "active_count": len(active),
                 "by_status": counts,
             },
             "finance": {
-                "profit": self.ledger.total_profit(),
+                "profit": balances.get("profit", 0),
+                "bank": balances.get("bank", 0),
+                "crypto": balances.get("crypto", 0),
+                "cash": balances.get("cash", 0),
                 "currency": self.config.get("finance.default_currency", "USD"),
                 "wallet_public_set": bool(self.config.get("finance.crypto_wallet_public")),
+                "bank_iban_set": bool(str(self.config.get("finance.bank_iban") or "").strip()),
+                "bank_provider_configured": self._bank_provider is not None,
+                "verify_on_chain": bool(self.config.get("finance.verify_on_chain", True)),
+                "income": income,
+                "last_bank": bank_income[0] if bank_income else None,
+                "last_crypto": crypto_income[0] if crypto_income else None,
+                "confirmed_payments_total": float(balances.get("bank", 0) or 0) + float(balances.get("crypto", 0) or 0),
             },
-            "system": self._last_snapshot,
+            "system": snap,
             "alerts": alerts,
             "recent_tasks": recent,
+            "active_tasks": active,
+            "journal": journal_tail[-25:],
             "android": self.emulator.status(),
+            "browser": {
+                "enabled": bool(self.config.get("browser.enabled", True)),
+                "headless": bool(self.config.get("browser.headless", True)),
+            },
             "ai": {"enabled": bool(self.config.get("ai.enabled")), "ollama": self.ollama.available()},
-            "integrations": {k: v.get("ok") for k, v in self.integration_report().items()},
+            "integrations": {
+                k: {
+                    "ok": bool(v.get("ok")),
+                    "live": bool(v.get("live")),
+                    "sample_task_count": v.get("sample_task_count") or 0,
+                    "error": v.get("error"),
+                    "note": v.get("note"),
+                }
+                for k, v in integrations.items()
+            },
+            "platforms": platform_rows,
+            "discovery": {
+                "sources_ok": sum(1 for v in integrations.values() if v.get("ok")),
+                "sources_total": len(integrations),
+                "tasks_seen": sum(counts.values()),
+            },
         }
 
     def discover_and_analyze(self) -> list[dict[str, Any]]:
@@ -657,7 +754,11 @@ class CentBotEngine:
         pid_path.write_text(str(__import__("os").getpid()), encoding="utf-8")
 
         if self.config.get("dashboard.enabled", True):
-            app = create_dashboard(self.status, lambda: self.emergency.trigger("dashboard"))
+            app = create_dashboard(
+                self.status,
+                lambda: self.emergency.trigger("dashboard"),
+                ack_alert=self.acknowledge_alert,
+            )
             start_dashboard_thread(app, str(self.config.get("dashboard.host", "127.0.0.1")), int(self.config.get("dashboard.port", 8787)))
             log.info("Dashboard on http://%s:%s", self.config.get("dashboard.host"), self.config.get("dashboard.port"))
 
