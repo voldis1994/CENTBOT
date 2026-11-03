@@ -56,9 +56,11 @@ def test_register_agent_live():
 
     client = HttpClient("https://api.basedagents.ai", timeout=90)
     identity = generate_identity()
+    # Profile names are globally unique — never reuse bare CENTBOT / CENTBOT-TEST
+    name = f"CENTBOT-{identity.public_key_b58[:8]}"
     registered = register_agent(
         client,
-        name="CENTBOT-TEST",
+        name=name,
         description="CENTBOT registration unit probe",
         capabilities=["code", "data"],
         identity=identity,
