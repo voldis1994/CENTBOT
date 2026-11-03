@@ -34,10 +34,15 @@ def wallet_from_env(env_name: str = "CENTBOT_ETH_PRIVATE_KEY") -> EthWallet | No
     return EthWallet(private_key=key, address=acct.address)
 
 
-def wallet_from_store(data: dict[str, Any] | None) -> EthWallet | None:
+def wallet_from_store(data: dict[str, Any] | str | None) -> EthWallet | None:
+    if isinstance(data, str):
+        data = {"private_key": data}
     if not data or not data.get("private_key"):
         return None
-    key = str(data["private_key"])
+    key = str(data["private_key"]).strip()
+    # Never treat a mnemonic / seed phrase as a signing key
+    if " " in key and len(key.split()) >= 12:
+        return None
     if not key.startswith("0x"):
         key = "0x" + key
     acct = Account.from_key(key)

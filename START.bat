@@ -53,6 +53,17 @@ set "SSL_CERT_FILE=%CD%\certs\cacert.pem"
 set "REQUESTS_CA_BUNDLE=%CD%\certs\cacert.pem"
 set "CURL_CA_BUNDLE=%CD%\certs\cacert.pem"
 
+REM Load signing key for TaskMarket/BountyBook claims (created by SET_ETH_KEY.bat)
+if exist "%CD%\data\eth.env" (
+  for /f "usebackq tokens=1* delims==" %%A in ("%CD%\data\eth.env") do (
+    if /I "%%A"=="CENTBOT_ETH_PRIVATE_KEY" set "CENTBOT_ETH_PRIVATE_KEY=%%B"
+  )
+)
+if not defined CENTBOT_ETH_PRIVATE_KEY (
+  echo [CENTBOT] WARNING: no CENTBOT_ETH_PRIVATE_KEY — TaskMarket claims will fail wallet_required.
+  echo [CENTBOT] Run SET_ETH_KEY.bat once, then START.bat again.
+)
+
 echo [CENTBOT] Starting LIVE with Python ^(exe disabled^)...
 echo [CENTBOT] TLS CA: %SSL_CERT_FILE%
 "%PY%" -m centbot.windows.start

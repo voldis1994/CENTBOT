@@ -86,7 +86,8 @@ class JobbiConnector(PlatformConnector):
                     payer_rating=GRADE_TRUST.get(grade, GRADE_TRUST.get(grade[:1], 0.5)),
                     funded=funded,
                     available=available,
-                    claimable=available,
+                    # Jobbi is an index only — never auto-claimable in CENTBOT
+                    claimable=False,
                     automation_allowed=True,
                     payment_state=payment_state,
                     raw={

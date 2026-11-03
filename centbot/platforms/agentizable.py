@@ -80,7 +80,8 @@ class AgentizableConnector(PlatformConnector):
             payer_rating=0.9 if payment_state == "escrowed" else 0.7,
             funded=payment_state in {"escrowed", "funded"} or amount_f > 0,
             available=True,
-            claimable=bool(item.get("claimable", True)),
+            # Agentizable claims require first-party wallet confirmation — not silent auto-claim
+            claimable=False,
             automation_allowed=True,
             payment_state=payment_state,
             raw={"source": "agentizable", "opportunity": item},
@@ -105,7 +106,7 @@ class AgentizableConnector(PlatformConnector):
             payer_rating=0.9,
             funded=True,
             available=True,
-            claimable=True,
+            claimable=False,
             automation_allowed=True,
             payment_state="escrowed",
             raw={"source": "agentizable", "bounty": item},

@@ -225,6 +225,11 @@ class CentBotEngine:
         if live and not claimable:
             blockers.append("no_claimable_live_platform")
         consistency = audit_config(self.config)
+        warnings = list(consistency.get("warnings") or [])
+        signing = self._signing_wallet_status()
+        if live and not signing.get("loaded"):
+            # Soft warning — BasedAgents may still work; TaskMarket/BountyBook need the key
+            warnings.append("signing_wallet_missing_run_SET_ETH_KEY_bat")
         # Merge consistency blockers that apply in live (avoid dupes)
         for b in consistency.get("blockers") or []:
             if b not in blockers and (live or b == "finance.simulate_rewards_in_dry_run_must_be_false"):
@@ -234,8 +239,9 @@ class CentBotEngine:
             "live": live,
             "ready": live and not blockers and bool(claimable),
             "blockers": blockers,
-            "warnings": list(consistency.get("warnings") or []),
+            "warnings": warnings,
             "claimable_platforms": claimable,
+            "signing_wallet": signing,
             "auto_accept": bool(self.config.get("analysis.auto_accept", False)),
             "verify_on_chain": bool(self.config.get("finance.verify_on_chain", True)),
             "bank_provider_configured": self._bank_provider is not None,
@@ -290,6 +296,14 @@ class CentBotEngine:
         from centbot.core.consistency import audit_config
 
         return audit_config(self.config)
+
+    def _signing_wallet_status(self) -> dict[str, Any]:
+        try:
+            from centbot.windows.eth_key import signing_wallet_status
+
+            return signing_wallet_status(self.root)
+        except Exception as exc:  # noqa: BLE001
+            return {"loaded": False, "error": str(exc)}
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
         """Persist safe settings to config/local.yaml from the control panel."""
@@ -451,6 +465,7 @@ class CentBotEngine:
                 "min_expected_profit": self.config.get("analysis.min_expected_profit"),
                 "bank_iban_set": bool(str(self.config.get("finance.bank_iban") or "").strip()),
                 "crypto_wallet_set": bool(str(self.config.get("finance.crypto_wallet_public") or "").strip()),
+                "signing_wallet": self._signing_wallet_status(),
                 "android_enabled": bool(self.config.get("android.enabled", True)),
                 "android_max": int(self.config.get("android.max_emulators", 4) or 4),
                 "max_parallel_tasks": int(self.config.get("system.max_parallel_tasks", 6) or 6),
@@ -652,6 +667,8 @@ class CentBotEngine:
             statuses,
         )
         launched = 0
+        # Reset per-cycle skip map so a newly set ETH key is picked up next cycle
+        self._accept_blocked_platforms = {}
         for row in sort_by_priority(rows):
             if not self.pool.has_capacity():
                 break
@@ -678,14 +695,60 @@ class CentBotEngine:
                     self.config.set("analysis.auto_accept", True)
                     if isinstance(self.acceptor.config, dict):
                         self.acceptor.config["auto_accept"] = True
+                    # Skip platforms already known blocked this cycle (e.g. wallet_required spam)
+                    blocked = getattr(self, "_accept_blocked_platforms", {}) or {}
+                    if row.get("platform") in blocked:
+                        continue
                     accept = self.acceptor.accept({**row, "status": "eligible", "_task": task_obj})
                     if not accept.get("ok") or accept.get("mode") == "dry_run":
-                        self.journal.record("accept", "error", task_id=row["id"], result=accept)
-                        self.db.add_alert(
-                            "warning",
-                            f"Accept failed {row.get('platform')}:{row.get('external_id')} — {accept.get('error') or accept.get('reason') or accept}",
-                            source="accept",
+                        err = (
+                            accept.get("error")
+                            or accept.get("reason")
+                            or accept.get("message")
+                            or "accept_failed"
                         )
+                        self.journal.record(
+                            "accept",
+                            "error",
+                            task_id=row["id"],
+                            platform=row.get("platform"),
+                            external_id=row.get("external_id"),
+                            error=str(err),
+                            reason=str(accept.get("reason") or err),
+                            user_action=accept.get("user_action") or accept.get("hint"),
+                            handoff_url=accept.get("handoff_url"),
+                            result=accept,
+                        )
+                        alert_msg = f"Accept failed {row.get('platform')}:{row.get('external_id')} — {err}"
+                        if str(err) == "wallet_required":
+                            alert_msg = (
+                                f"{row.get('platform')}: wallet_required — "
+                                "palaid SET_ETH_KEY.bat (publiskā adrese claimam nepietiek), tad STOP+START"
+                            )
+                            self._accept_blocked_platforms = {
+                                **blocked,
+                                str(row.get("platform")): "wallet_required",
+                            }
+                        # Deduplicate identical open alerts
+                        existing = self.db.fetchone(
+                            "SELECT id FROM alerts WHERE acknowledged=0 AND message=? LIMIT 1",
+                            (alert_msg,),
+                        )
+                        if not existing:
+                            self.db.add_alert("warning", alert_msg, source="accept")
+                        # Permanent platform-policy failures: stop retrying every cycle
+                        permanent = {
+                            "index_only",
+                            "index_only_no_accounts",
+                            "human_authorization_required",
+                            "not_directly_claimable",
+                            "register_api_unsupported",
+                        }
+                        if str(err) in permanent or str(accept.get("reason") or "") in permanent:
+                            self.db.execute(
+                                "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
+                                ("rejected", utcnow(), row["id"]),
+                            )
                         # Skip to next suitable task instead of faking success
                         continue
                     self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))

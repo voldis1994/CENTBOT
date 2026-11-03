@@ -652,8 +652,11 @@
             <label class="worker">IBAN
               <input id="setIban" type="text" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
             </label>
-            <label class="worker">Kripto maks (public)
+            <label class="worker">Kripto maks (public / payout)
               <input id="setWallet" type="text" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
+            </label>
+            <label class="worker">Parakstīšanas maks (claim)
+              <div id="signingWalletBox" style="margin-top:.35rem;font-size:.85rem;opacity:.9">—</div>
             </label>
             <label class="worker"><input id="setAutoAccept" type="checkbox"/> Auto-accept (live)</label>
             <label class="worker"><input id="setAndroidEnabled" type="checkbox"/> Android enabled</label>
@@ -672,6 +675,7 @@
           <p class="honesty">
             LIVE režīms rāda panākumus tikai pēc reālas platformas darbības un neatkarīgas maksājumu verifikācijas.
             Nekad neievadiet bankas paroli, CVV vai seed frāzi — panelis tos noraidīs.
+            TaskMarket/BountyBook claimam vajag ETH privāto atslēgu: palaid <code>SET_ETH_KEY.bat</code> (ne paneļa lauku).
           </p>
         </section>
       </section>
@@ -779,7 +783,12 @@
         const ts = (j.ts || "").slice(11, 19) || "--:--:--";
         const st = j.status || "";
         const cls = st === "error" || st === "failed" ? "err" : (st === "warn" || st === "blocked" ? "warn" : "ok");
-        const msg = [j.action, st, j.platform || "", j.task_id || "", j.error || j.message || j.reason || ""]
+        const nested = (j.result && typeof j.result === "object") ? j.result : {};
+        const detail = j.error || j.message || j.reason
+          || nested.error || nested.reason || nested.message
+          || j.user_action || nested.user_action || nested.hint || "";
+        const shortId = j.external_id || (j.task_id ? String(j.task_id).slice(0, 8) : "");
+        const msg = [j.action, st, j.platform || "", shortId, detail]
           .filter(Boolean).join(" · ");
         return `<div class="log-item"><time>${esc(ts)}</time><div class="${cls}">${esc(msg)}</div></div>`;
       }).join("");
@@ -802,7 +811,8 @@
         let msg = b, action = null, level = "warning";
         if (b.includes("mode_not_live")) { msg = "Sistēma nav LIVE režīmā — claim/submit bloķēti"; level = "info"; }
         if (b.includes("auto_accept")) { msg = "auto_accept izslēgts — ieslēdz config, lai pieņemtu darbus"; }
-        if (b.includes("wallet")) { msg = "Trūkst crypto maka adreses (finance.crypto_wallet_public)"; action = "Iestatījumi"; }
+        if (b.includes("wallet") && b.includes("signing")) { msg = "Trūkst ETH privātās atslēgas claimam — palaid SET_ETH_KEY.bat"; action = null; }
+        else if (b.includes("wallet")) { msg = "Trūkst crypto maka adreses (finance.crypto_wallet_public)"; action = "Iestatījumi"; }
         if (b.includes("controlled")) { msg = "Controlled/dry_run režīms — ārējās darbības bloķētas"; level = "info"; }
         if (b.includes("no_claimable")) { msg = "Nav pieejamu live platformu claim"; level = "critical"; }
         items.push({ level, message: msg, action, id: null });
@@ -979,6 +989,14 @@
         document.getElementById("setAndroidEnabled").checked = !!st.android_enabled;
         document.getElementById("setAndroidMax").value = st.android_max ?? 4;
         document.getElementById("setMaxParallel").value = st.max_parallel_tasks ?? 6;
+      }
+      const sw = st.signing_wallet || {};
+      const swBox = document.getElementById("signingWalletBox");
+      if (swBox) {
+        swBox.textContent = sw.loaded
+          ? `IELĀDĒTS · ${(sw.address || "").slice(0, 10)}… (${sw.source || "ok"})`
+          : "NAV — palaid SET_ETH_KEY.bat (claimam vajag privāto atslēgu)";
+        swBox.style.color = sw.loaded ? "var(--ok, #5dcea4)" : "var(--warn, #e0a15a)";
       }
       const cons = s.consistency || {};
       const cbox = document.getElementById("consistencyBox");

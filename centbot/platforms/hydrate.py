@@ -28,7 +28,11 @@ def task_from_row(row: dict[str, Any]) -> PlatformTask:
         payer_rating=float(row.get("payer_trust") or 0.5),
         funded=bool(row.get("funded")),
         available=bool(row.get("available")),
-        claimable=bool(row.get("available")),
+        claimable=(
+            False
+            if str(row.get("platform") or "") in {"jobbi", "agentizable"}
+            else bool(row.get("claimable", row.get("available")))
+        ),
         automation_allowed=True,
         payment_state=str((raw or {}).get("jobbi", {}).get("payment_state") or ""),
         raw=dict(raw or {}),
