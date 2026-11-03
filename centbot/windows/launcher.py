@@ -339,10 +339,16 @@ def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
     out: dict[str, Any] = {"consistency": audit}
     android_on = bool(config.get("android.enabled", True))
     if not skip_emulators and android_on:
+        try:
+            from centbot.windows.android_sdk import ensure_path_env, resolve_sdk_tools
+
+            _tools = ensure_path_env(resolve_sdk_tools())
+        except Exception:  # noqa: BLE001
+            _tools = {}
         count = int(config.get("android.max_emulators", 4) or 4)
         emu = start_emulators(
-            adb=str(config.get("android.adb_path", "adb")),
-            emulator=str(config.get("android.emulator_path", "emulator")),
+            adb=str(config.get("android.adb_path") or _tools.get("adb") or "adb"),
+            emulator=str(config.get("android.emulator_path") or _tools.get("emulator") or "emulator"),
             count=count,
         )
         out["emulators"] = emu

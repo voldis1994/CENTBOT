@@ -43,6 +43,11 @@ def list_avds(emulator_path: str = "emulator") -> list[str]:
         return []
 
 
+def ensure_avds(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Alias used by android_sdk / INSTALL_ANDROID.bat."""
+    return ensure_centbot_avds(*args, **kwargs)
+
+
 def ensure_centbot_avds(
     *,
     count: int | None = None,

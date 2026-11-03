@@ -187,6 +187,8 @@ class Database:
             "status", "payer_trust", "funded", "available", "fingerprint",
             "raw_json", "created_at", "updated_at",
         ]
+        # claimable is analysis-only (not a DB column); keep out of SQL
+        task.pop("claimable", None)
         values = [task.get(c) for c in cols]
         placeholders = ",".join("?" for _ in cols)
         updates = ",".join(f"{c}=excluded.{c}" for c in cols if c not in ("id", "created_at"))

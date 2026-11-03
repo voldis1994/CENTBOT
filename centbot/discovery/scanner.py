@@ -55,6 +55,7 @@ class GlobalTaskScanner:
                     "category": t.category_hint or None,
                     "funded": 1 if t.funded else 0,
                     "available": 1 if t.available else 0,
+                    "claimable": 1 if t.claimable else 0,
                     "payer_trust": t.payer_rating if t.payer_rating is not None else 0.5,
                     "fingerprint": fingerprint(t),
                     "status": "discovered",
