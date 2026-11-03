@@ -100,4 +100,16 @@
 | 99 | Stratēģijas pielāgošana | Done | `learn_from_reward` / rebalance |
 | 100 | Pilns darba režīms | Ready | start scripts + dashboard |
 
-**Piezīme:** 46–54 (Android SDK / Ollama instalācija uz mašīnas) un 91–93 live atlīdzības prasa lokālu runtime un platformu API atslēgas — koda ceļi ir gatavi; demo režīms simulē drošu ciklu.
+**Piezīme:** 46–54 (Android SDK / Ollama instalācija uz mašīnas) un live claim prasa lokālu runtime + credentials.
+
+## Prioritāšu hardenings (P0–P2)
+| Prioritāte | Darbs | Statuss |
+|---|---|---|
+| P0 | `centbot.sandbox.isolated` | Done — eksports + `sandbox_available()` |
+| P0 | Novākt demo risinājumus no īstās izpildes | Done — executors prasa reālus inputus |
+| P0 | Maksājums pēc īsta tx | Done — `finance/payment_verify.py` + `require_tx_hash` |
+| P1 | Ievaddatu lejupielāde | Done — `inputs/fetch.py` |
+| P1 | Pārbaude pret uzdevuma prasībām | Done — `quality/requirements.py` |
+| P1 | `claim → execute → submit → paid` tests | Done — `tests/test_priority_hardening.py` |
+| P2 | Android/browser → centrālais izpildītājs | Done — `browser_exec` / `android_exec` routerī |
+| P2 | Aktuālie valūtu kursi | Done — Frankfurter + Coinbase |

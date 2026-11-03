@@ -1,4 +1,4 @@
-"""Excel processing module."""
+"""Excel processing module — requires real input.xlsx."""
 
 from __future__ import annotations
 
@@ -20,8 +20,7 @@ class ExcelProcessor(Executor):
 
         src = workdir / "input.xlsx"
         if not src.exists():
-            demo = pd.DataFrame({"month": ["Jan", "Feb"], "sales": [10, 20]})
-            demo.to_excel(src, index=False)
+            return ExecutionResult(ok=False, category=self.category, error="missing_input:input.xlsx")
         df = pd.read_excel(src)
         summary = pd.DataFrame({"total_sales": [df.select_dtypes("number").sum().sum()], "rows": [len(df)]})
         out = workdir / "summary.xlsx"

@@ -1,7 +1,8 @@
-"""Text processing module."""
+"""Text processing — uses task description / input.txt (real brief, not synthetic filler)."""
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -16,10 +17,13 @@ class TextProcessor(Executor):
     def execute(self, task: dict[str, Any], workdir: Path) -> ExecutionResult:
         workdir.mkdir(parents=True, exist_ok=True)
         src = workdir / "input.txt"
-        if not src.exists():
-            body = task.get("description") or "Great product. Shipping was slow. Support was helpful. Great value."
-            src.write_text(body, encoding="utf-8")
-        text = src.read_text(encoding="utf-8")
+        text = ""
+        if src.exists():
+            text = src.read_text(encoding="utf-8")
+        else:
+            text = str(task.get("description") or "").strip()
+        if not text:
+            return ExecutionResult(ok=False, category=self.category, error="missing_input:description|input.txt")
         sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
         words = re.findall(r"[A-Za-zāčēģīķļņšūžĀČĒĢĪĶĻŅŠŪŽ']+", text.lower())
         common = Counter(words).most_common(8)
@@ -30,7 +34,5 @@ class TextProcessor(Executor):
             "short_summary": ". ".join(sentences[:2]) + ("." if sentences else ""),
         }
         out = workdir / "summary.json"
-        import json
-
         out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         return ExecutionResult(ok=True, category=self.category, output=summary, artifacts=[str(out)])

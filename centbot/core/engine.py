@@ -30,13 +30,18 @@ from centbot.discovery.dedup import DuplicateFilter
 from centbot.discovery.scanner import GlobalTaskScanner
 from centbot.discovery.watcher import NewTaskWatcher
 from centbot.executors.router import TaskExecutorRouter
+from centbot.finance.currency import refresh_rates
 from centbot.finance.ledger import FinanceLedger
 from centbot.finance.optimization import ProfitOptimizer
+from centbot.finance.payment_verify import confirm_payment
 from centbot.finance.payments import PaymentIntegrations
+from centbot.inputs.fetch import download_task_inputs
 from centbot.platforms.registry import build_platforms, verify_integrations
 from centbot.quality.error_fix import ErrorRepair
 from centbot.quality.evidence import save_evidence
+from centbot.quality.requirements import verify_against_requirements
 from centbot.quality.result_check import verify_result
+from centbot.sandbox.isolated import sandbox_available
 from centbot.security.credentials import CredentialStore
 from centbot.security.rate_limit import RateLimiter
 from centbot.submission.rejection_fix import RejectionRepairProcess
@@ -90,8 +95,25 @@ class CentBotEngine:
             self.journal,
             dry_run=config.is_dry_run(),
         )
-        self.executor = TaskExecutorRouter()
+        self.executor = TaskExecutorRouter(
+            browser_enabled=bool(config.get("browser.enabled", True)),
+            android_enabled=bool(config.get("android.enabled", False)),
+            headless=bool(config.get("browser.headless", True)),
+            timeout_ms=int(config.get("browser.timeout_ms", 30000)),
+            user_agent=str(config.get("browser.user_agent") or None),
+            adb_path=str(config.get("android.adb_path", "adb")),
+            emulator_path=str(config.get("android.emulator_path", "emulator")),
+        )
         self.repair = ErrorRepair(max_attempts=2)
+        if not sandbox_available():
+            self.db.add_alert("critical", "centbot.sandbox.isolated unavailable", source="sandbox")
+            self.journal.record("sandbox", "error", available=False)
+        else:
+            self.journal.record("sandbox", "ok", available=True)
+        try:
+            refresh_rates(force=True)
+        except Exception as exc:  # noqa: BLE001
+            self.journal.record("fx", "error", error=str(exc))
         self.submitter = Submitter(self.platforms, self.db, self.journal, dry_run=config.is_dry_run())
         self.status_checker = SubmissionStatusChecker(self.platforms, self.db)
         self.rejection_repair = RejectionRepairProcess(self.db, self.journal)
@@ -222,6 +244,8 @@ class CentBotEngine:
             (task_id, task_row.get("category") or "general", "running", utcnow()),
         )
         workdir = self._work_dir(task_id)
+        inputs = download_task_inputs(task_row, workdir)
+        self.journal.record("inputs", "ok" if inputs.get("ok") else "partial", task_id=task_id, **{k: inputs.get(k) for k in ("saved", "errors", "urls")})
         plan = self.planner.plan(task_row)
         subtasks = decompose(task_row)
         self.workers.run_subtasks(subtasks, {"task": task_row, "plan": plan})
@@ -229,10 +253,18 @@ class CentBotEngine:
         def _run() -> dict[str, Any]:
             result = self.executor.execute(task_row, workdir)
             check = verify_result(result.to_dict(), workdir)
-            return {"ok": result.ok and check["ok"], "result": result.to_dict(), "check": check}
+            req = verify_against_requirements(task_row, result.to_dict(), workdir)
+            ok_local = bool(result.ok and check["ok"] and req["ok"])
+            return {
+                "ok": ok_local,
+                "result": result.to_dict(),
+                "check": check,
+                "requirements": req,
+                "error": None if ok_local else (result.error or check.get("issues") or req.get("issues")),
+            }
 
         outcome = self.repair.run_with_repair(_run)
-        evidence = save_evidence(task_id, workdir, self.root / "data" / "evidence", {"outcome": outcome, "plan": plan})
+        evidence = save_evidence(task_id, workdir, self.root / "data" / "evidence", {"outcome": outcome, "plan": plan, "inputs": inputs})
         ok = bool(outcome.get("ok"))
         status = "completed" if ok else "failed"
         self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", (status, utcnow(), task_id))
@@ -254,25 +286,14 @@ class CentBotEngine:
             task_obj = task_row.get("_task") or task_from_row(task_row)
             submit_row = {**task_row, "_task": task_obj}
             submit_result = self.submitter.submit(submit_row, submit_payload)
+            if submit_result.get("ok") and not self.config.is_dry_run():
+                self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("submitted", utcnow(), task_id))
             self.journal.record("submit_result", "ok" if submit_result.get("ok") else "pending", task_id=task_id, result=submit_result)
-            # Optional synthetic accounting only when explicitly enabled (off by default)
-            if self.config.is_dry_run() and bool(self.config.get("finance.simulate_rewards_in_dry_run", False)):
-                reward = float(task_row.get("reward_amount") or 0)
-                currency = str(task_row.get("reward_currency") or "USD")
-                tx = f"sim-{task_id}"
-                if currency.upper() in {"USDT", "BTC", "ETH", "USDC"}:
-                    self.ledger.record_crypto_reward(
-                        amount=reward, currency=currency, platform=task_row["platform"], task_id=task_id, tx_ref=tx
-                    )
-                else:
-                    self.ledger.record_bank_reward(
-                        amount=reward, currency=currency, platform=task_row["platform"], task_id=task_id, tx_ref=tx
-                    )
         else:
             self.optimizer.learn_from_reward(task_row["platform"], False)
             self.rejection_repair.handle(task_id, reason=str(outcome.get("error") or "failed"))
         self.journal.record("execute", status, task_id=task_id, evidence=str(evidence))
-        return {"ok": ok, "task_id": task_id, "evidence": str(evidence)}
+        return {"ok": ok, "task_id": task_id, "evidence": str(evidence), "inputs": inputs}
 
     def schedule_eligible(self) -> int:
         from centbot.platforms.hydrate import task_from_row
@@ -304,9 +325,10 @@ class CentBotEngine:
         return launched
 
     def reconcile_payments(self) -> list[dict[str, Any]]:
-        """Poll platforms for settled payouts and book real income rows."""
+        """Book income only after platform status is settled and a real tx is present."""
         if not self.config.get("finance.reconcile_payments", True):
             return []
+        require_tx = bool(self.config.get("finance.require_tx_hash", True))
         updates: list[dict[str, Any]] = []
         pending = self.db.fetchall(
             "SELECT * FROM tasks WHERE status IN ('completed','submitted','verified') ORDER BY updated_at DESC LIMIT 40"
@@ -320,32 +342,34 @@ class CentBotEngine:
             except Exception as exc:  # noqa: BLE001
                 self.journal.record("payment_check", "error", task_id=row["id"], error=str(exc))
                 continue
-            payment = pay.get("payment") if isinstance(pay, dict) else None
-            status = None
-            tx_hash = None
-            if isinstance(payment, dict):
-                status = payment.get("payment_status") or payment.get("status") or (payment.get("payment") or {}).get("status")
-                tx_hash = payment.get("payment_tx_hash") or payment.get("tx_hash")
-                task_obj = payment.get("task") if isinstance(payment.get("task"), dict) else payment
-                if isinstance(task_obj, dict):
-                    status = status or task_obj.get("payment_status") or task_obj.get("status")
-                    tx_hash = tx_hash or task_obj.get("payment_tx_hash")
-            if status in {"settled", "released", "paid", "verified"} or (isinstance(status, str) and status.endswith("settled")):
-                amount = float(row.get("reward_amount") or 0)
-                currency = str(row.get("reward_currency") or "USDC")
-                tx_ref = str(tx_hash or f"{row['platform']}-{row['external_id']}-payout")
-                recorded = self.ledger.record_crypto_reward(
-                    amount=amount,
-                    currency=currency,
-                    platform=row["platform"],
+            confirmed = confirm_payment(pay if isinstance(pay, dict) else None, require_tx=require_tx)
+            if not confirmed.get("ok"):
+                self.journal.record(
+                    "payment_check",
+                    "pending",
                     task_id=row["id"],
-                    tx_ref=tx_ref,
+                    reason=confirmed.get("reason"),
+                    payment_status=confirmed.get("status"),
+                    tx_hash=confirmed.get("tx_hash"),
                 )
-                if recorded:
-                    self.optimizer.learn_from_reward(row["platform"], True, amount_base=amount)
-                    self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("paid", utcnow(), row["id"]))
-                    updates.append({"task_id": row["id"], "tx_ref": tx_ref, "amount": amount, "currency": currency})
-                    self.journal.record("payment_received", "ok", task_id=row["id"], tx_ref=tx_ref, amount=amount)
+                continue
+            amount = float(confirmed.get("amount") or row.get("reward_amount") or 0)
+            currency = str(confirmed.get("currency") or row.get("reward_currency") or "USDC")
+            tx_ref = str(confirmed.get("tx_hash"))
+            recorded = self.ledger.record_crypto_reward(
+                amount=amount,
+                currency=currency,
+                platform=row["platform"],
+                task_id=row["id"],
+                tx_ref=tx_ref,
+            )
+            if recorded:
+                self.optimizer.learn_from_reward(row["platform"], True, amount_base=amount)
+                self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("paid", utcnow(), row["id"]))
+                updates.append({"task_id": row["id"], "tx_ref": tx_ref, "amount": amount, "currency": currency})
+                self.journal.record("payment_received", "ok", task_id=row["id"], tx_ref=tx_ref, amount=amount)
+            else:
+                self.journal.record("payment_received", "duplicate", task_id=row["id"], tx_ref=tx_ref)
         return updates
 
     def cycle_once(self) -> dict[str, Any]:

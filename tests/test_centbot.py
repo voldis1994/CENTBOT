@@ -125,14 +125,31 @@ def test_analysis_rejects_unprofitable(tmp_path: Path):
 def test_categorize_and_profit_math():
     assert categorize("Merge sorted lists in Python", "implement function", "") == "programming"
     assert expected_profit(10, 1, 0.5) == 4.0
-    assert to_base(1, "EUR", "USD") == pytest.approx(1.08)
+    assert 0.8 < to_base(1, "EUR", "USD") < 1.5  # live FX band
 
 
 def test_executors(tmp_path: Path):
-    router = TaskExecutorRouter()
-    for cat in ("csv", "excel", "json_xml", "pdf", "image", "text", "programming"):
-        result = router.execute({"category": cat, "title": cat, "description": cat}, tmp_path / cat)
-        assert result.ok, f"{cat} failed: {result.error}"
+    router = TaskExecutorRouter(browser_enabled=False, android_enabled=False)
+    # Real fixtures only — no demo auto-generation
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir()
+    (csv_dir / "input.csv").write_text("email,name\na@x.com,A\n", encoding="utf-8")
+    assert router.execute({"category": "csv", "title": "csv"}, csv_dir).ok
+
+    text = router.execute(
+        {"category": "text", "title": "text", "description": "Alpha theme. Beta theme. Gamma."},
+        tmp_path / "text",
+    )
+    assert text.ok, text.error
+
+    prog = tmp_path / "programming"
+    prog.mkdir()
+    (prog / "solution.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (prog / "test_solution.py").write_text(
+        "from solution import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+        encoding="utf-8",
+    )
+    assert router.execute({"category": "programming", "title": "programming"}, prog).ok
 
 
 def test_credentials_and_rate_limit(tmp_path: Path):

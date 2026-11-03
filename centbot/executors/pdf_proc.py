@@ -1,4 +1,4 @@
-"""PDF processing module."""
+"""PDF processing — requires real input.pdf."""
 
 from __future__ import annotations
 
@@ -14,18 +14,15 @@ class PDFProcessor(Executor):
     def execute(self, task: dict[str, Any], workdir: Path) -> ExecutionResult:
         workdir.mkdir(parents=True, exist_ok=True)
         src = workdir / "input.pdf"
-        text = ""
-        if src.exists():
-            try:
-                from pypdf import PdfReader
+        if not src.exists():
+            return ExecutionResult(ok=False, category=self.category, error="missing_input:input.pdf")
+        try:
+            from pypdf import PdfReader
 
-                reader = PdfReader(str(src))
-                text = "\n".join((page.extract_text() or "") for page in reader.pages)
-            except Exception as exc:  # noqa: BLE001
-                return ExecutionResult(ok=False, category=self.category, error=str(exc))
-        else:
-            text = "DEMO PDF TEXT\nVendor: Acme\nDate: 2026-01-01\nTotal: 42.00"
-            (workdir / "input.pdf.txt").write_text(text, encoding="utf-8")
+            reader = PdfReader(str(src))
+            text = "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as exc:  # noqa: BLE001
+            return ExecutionResult(ok=False, category=self.category, error=str(exc))
         out = workdir / "extracted.txt"
         out.write_text(text, encoding="utf-8")
         fields = {}

@@ -1,8 +1,7 @@
-"""Programming task executor (sandboxed Python snippets)."""
+"""Programming task executor — sandboxed; no baked-in demo solutions."""
 
 from __future__ import annotations
 
-import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -17,52 +16,62 @@ class ProgrammingExecutor(Executor):
         workdir.mkdir(parents=True, exist_ok=True)
         solution = workdir / "solution.py"
         tests = workdir / "test_solution.py"
-        if not solution.exists():
-            solution.write_text(
-                textwrap.dedent(
-                    '''\
-                    def merge_sorted(a, b):
-                        i = j = 0
-                        out = []
-                        while i < len(a) and j < len(b):
-                            if a[i] <= b[j]:
-                                out.append(a[i]); i += 1
-                            else:
-                                out.append(b[j]); j += 1
-                        out.extend(a[i:])
-                        out.extend(b[j:])
-                        return out
-                    '''
-                ),
-                encoding="utf-8",
-            )
-        if not tests.exists():
-            tests.write_text(
-                textwrap.dedent(
-                    '''\
-                    from solution import merge_sorted
+        runner_script = workdir / "run.py"
 
-                    def test_merge():
-                        assert merge_sorted([1, 3], [2, 4]) == [1, 2, 3, 4]
-                        assert merge_sorted([], [1]) == [1]
-                        assert merge_sorted([1], []) == [1]
-                    '''
-                ),
+        # Prefer explicit solution; otherwise attempt to run provided run.py / tests only
+        if not solution.exists() and not runner_script.exists() and not tests.exists():
+            # If description contains a fenced python block, materialize it
+            desc = str(task.get("description") or "")
+            code = _extract_python_fence(desc)
+            if code:
+                solution.write_text(code, encoding="utf-8")
+            else:
+                return ExecutionResult(
+                    ok=False,
+                    category=self.category,
+                    error="missing_input:solution.py|run.py|test_solution.py (no demo fallback)",
+                )
+
+        if tests.exists():
+            runner = workdir / "_run_tests.py"
+            # Discover test_* callables without assuming a specific demo name
+            runner.write_text(
+                "import importlib.util, sys\n"
+                "from pathlib import Path\n"
+                "p = Path('test_solution.py')\n"
+                "spec = importlib.util.spec_from_file_location('test_solution', p)\n"
+                "mod = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(mod)\n"
+                "ran = 0\n"
+                "for name in dir(mod):\n"
+                "    if name.startswith('test_') and callable(getattr(mod, name)):\n"
+                "        getattr(mod, name)(); ran += 1\n"
+                "assert ran > 0, 'no tests found'\n"
+                "print('OK', ran)\n",
                 encoding="utf-8",
             )
-        runner = workdir / "_run_tests.py"
-        runner.write_text(
-            "from test_solution import test_merge\n"
-            "test_merge()\n"
-            "print('OK')\n",
-            encoding="utf-8",
-        )
-        result = run_python_isolated(script_path=runner, workdir=workdir, timeout=30)
+            result = run_python_isolated(script_path=runner, workdir=workdir, timeout=60)
+        elif runner_script.exists():
+            result = run_python_isolated(script_path=runner_script, workdir=workdir, timeout=60)
+        else:
+            result = run_python_isolated(script_path=solution, workdir=workdir, timeout=60)
+
         ok = result.get("returncode", 1) == 0
+        artifacts = [str(p) for p in (solution, tests, runner_script) if p.exists()]
         return ExecutionResult(
             ok=ok,
             category=self.category,
             output=result,
-            artifacts=[str(solution), str(tests)],
-            error=None if ok else result.get("stderr") or "tests_failed",
+            artifacts=artifacts,
+            error=None if ok else result.get("stderr") or result.get("error") or "tests_failed",
         )
+
+
+def _extract_python_fence(text: str) -> str | None:
+    import re
+
+    m = re.search(r"```(?:python|py)\s*([\s\S]*?)```", text, re.I)
+    if not m:
+        return None
+    code = m.group(1).strip()
+    return code or None

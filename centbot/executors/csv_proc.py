@@ -1,4 +1,4 @@
-"""CSV processing module."""
+"""CSV processing module — requires real input.csv (no demo generation)."""
 
 from __future__ import annotations
 
@@ -16,8 +16,7 @@ class CSVProcessor(Executor):
         workdir.mkdir(parents=True, exist_ok=True)
         src = workdir / "input.csv"
         if not src.exists():
-            # Demo input for dry-run
-            src.write_text("email,name\nA@X.com,Ann\na@x.com,Ann\nb@y.com,Bob\n", encoding="utf-8")
+            return ExecutionResult(ok=False, category=self.category, error="missing_input:input.csv")
         rows: list[dict[str, str]] = []
         with open(src, newline="", encoding="utf-8") as fh:
             reader = csv.DictReader(fh)
