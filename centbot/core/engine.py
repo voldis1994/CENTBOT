@@ -460,14 +460,33 @@ class CentBotEngine:
         return self.run_live_trial(execute_local=True)
 
     def run_live_trial(self, *, execute_local: bool = True) -> dict[str, Any]:
-        """Pull real platform feeds, analyze, and (optionally) practice-execute without claiming."""
-        report: dict[str, Any] = {"integrations": self.integration_report(), "mode": self.config.get("system.mode")}
+        """Pull real platform feeds, analyze, and (optionally) practice-execute without claiming.
+
+        This is the controlled live test: real discovery on live APIs, optional local
+        execution, payment reconcile probe — but **no** claim/submit unless mode is live
+        and auto_accept is enabled with credentials.
+        """
+        from centbot.sandbox.isolated import sandbox_backend_info
+
+        dry = self.config.is_dry_run()
+        report: dict[str, Any] = {
+            "integrations": self.integration_report(),
+            "mode": self.config.get("system.mode"),
+            "claims_allowed": (not dry) and bool(self.config.get("analysis.auto_accept")),
+            "sandbox": sandbox_backend_info(),
+            "controlled": True,
+        }
         analyzed = self.discover_and_analyze()
         report["discovered"] = len(analyzed)
         eligible = [t for t in analyzed if t.get("status") == "eligible"]
         report["eligible"] = len(eligible)
         report["samples"] = [
-            {"platform": t["platform"], "title": (t.get("title") or "")[:80], "reward": t.get("reward_amount"), "currency": t.get("reward_currency")}
+            {
+                "platform": t["platform"],
+                "title": (t.get("title") or "")[:80],
+                "reward": t.get("reward_amount"),
+                "currency": t.get("reward_currency"),
+            }
             for t in sort_by_priority(eligible)[:10]
         ]
         results = []
@@ -480,12 +499,23 @@ class CentBotEngine:
         report["profit"] = self.ledger.total_profit()
         report["income"] = self.ledger.income_history(20)
         report["platform_stats"] = self.ledger.platform_profitability()
+        report["verification"] = {
+            "live_discovery": report["discovered"] > 0,
+            "local_execution_attempted": bool(execute_local),
+            "local_execution_ok": any(r.get("ok") for r in results) if results else None,
+            "reward_received": bool(report["payments"]),
+            "reward_blocker": None
+            if report["payments"]
+            else ("dry_run_no_claim" if dry else "no_settled_payout_observed"),
+        }
         self.journal.record(
             "live_trial",
             "ok",
             discovered=report["discovered"],
             eligible=report["eligible"],
             executed=len(results),
+            controlled=True,
+            reward_received=bool(report["payments"]),
         )
         return report
 

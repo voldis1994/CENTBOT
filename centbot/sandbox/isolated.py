@@ -1,13 +1,14 @@
 """Isolated environment for untrusted files and code.
 
-Runs foreign Python under a userspace restrictor (no network imports, FS confined
-to the workdir) and, when available, a network-namespaced process via ``unshare -n``.
+Malicious Python is executed inside a **strict container** when possible
+(Docker/Podman, or Linux ``unshare``+chroot). A userspace restrictor still runs
+*inside* the container as defense-in-depth, but is never treated as the sole
+security boundary.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+from centbot.sandbox import container as _container
 from centbot.sandbox import restrictor as _restrictor_module
 
 
@@ -22,49 +24,38 @@ def _write_bootstrap(workdir: Path, script_path: Path) -> Path:
     """Create a launcher that installs restrictions before running the target script."""
     restrictor_src = Path(_restrictor_module.__file__).read_text(encoding="utf-8")
     (workdir / "_centbot_restrictor.py").write_text(restrictor_src, encoding="utf-8")
+    # Paths inside container use /work; outside restrictor_only use absolute workdir
     launcher = workdir / "_centbot_launch.py"
     launcher.write_text(
         textwrap.dedent(
-            f"""\
+            """\
+            import os
             import runpy
             import sys
             from pathlib import Path
-            sys.path.insert(0, r"{workdir}")
+
+            # Inside Docker/unshare chroot CENTBOT_SANDBOX_ROOT=/work; otherwise host workdir.
+            root = Path(os.environ.get("CENTBOT_SANDBOX_ROOT") or Path(__file__).resolve().parent)
+            sys.path.insert(0, str(root))
             import _centbot_restrictor
-            _centbot_restrictor.install(r"{workdir}")
-            sys.argv = [r"{script_path}"] + sys.argv[1:]
-            runpy.run_path(r"{script_path}", run_name="__main__")
+
+            _centbot_restrictor.install(str(root))
+            script = root / "_run_target.py"
+            sys.argv = [str(script)] + sys.argv[1:]
+            runpy.run_path(str(script), run_name="__main__")
             """
         ),
         encoding="utf-8",
     )
+    # Copy/normalize target as _run_target.py for stable container path
+    target = workdir / "_run_target.py"
+    if script_path.resolve() != target.resolve():
+        target.write_bytes(Path(script_path).read_bytes())
     return launcher
 
 
-def _build_command(launcher: Path) -> list[str]:
-    """Prefer network namespace isolation when unshare is available and permitted."""
-    base = [sys.executable, "-I", str(launcher)]
-    unshare = shutil.which("unshare")
-    if not unshare:
-        return base
-    # -n: new network namespace (no interfaces except lo if configured; typically no egress)
-    # --map-current-user avoids requiring full root on some kernels with user ns
-    candidates = [
-        [unshare, "-n", "-r", "--", *base],
-        [unshare, "-n", "--", *base],
-    ]
-    for cmd in candidates:
-        try:
-            probe = subprocess.run(
-                [unshare, "-n", "true"] if "-r" not in cmd else [unshare, "-n", "-r", "true"],
-                capture_output=True,
-                timeout=2,
-            )
-            if probe.returncode == 0:
-                return cmd
-        except Exception:
-            continue
-    return base
+def _restrictor_only_command(launcher: Path) -> list[str]:
+    return [sys.executable, "-I", str(launcher)]
 
 
 def run_python_isolated(
@@ -73,8 +64,10 @@ def run_python_isolated(
     workdir: Path | None = None,
     timeout: float = 30.0,
     extra_env: dict[str, str] | None = None,
+    *,
+    require_container: bool | None = None,
 ) -> dict[str, Any]:
-    """Run Python confined to ``workdir`` without network or host FS access."""
+    """Run Python confined to ``workdir`` inside a container when available."""
     workdir = Path(workdir or tempfile.mkdtemp(prefix="centbot-sandbox-"))
     workdir.mkdir(parents=True, exist_ok=True)
     if script_path is None:
@@ -82,7 +75,6 @@ def run_python_isolated(
         script_path.write_text(code or "print('ok')", encoding="utf-8")
     else:
         script_path = Path(script_path)
-        # Ensure script lives inside workdir (copy if needed)
         try:
             script_path.resolve().relative_to(workdir.resolve())
         except ValueError:
@@ -102,16 +94,39 @@ def run_python_isolated(
         "PYTHONNOUSERSITE": "1",
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "CENTBOT_SANDBOX": "1",
+        # Overwritten to /work by container backends
         "CENTBOT_SANDBOX_ROOT": str(workdir.resolve()),
     }
     if extra_env:
-        # Still strip secrets
         for k, v in extra_env.items():
             if k.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PRIVATE")):
                 continue
             env[k] = v
 
-    cmd = _build_command(launcher)
+    if require_container is None:
+        require_container = os.environ.get("CENTBOT_REQUIRE_CONTAINER", "1") not in {"0", "false", "False"}
+
+    preferred = os.environ.get("CENTBOT_SANDBOX_BACKEND")
+    container_result = _container.run_containerized(
+        launcher=launcher,
+        workdir=workdir,
+        timeout=timeout,
+        env=env,
+        preferred=preferred,
+    )
+    if container_result.get("container"):
+        return container_result
+    if require_container:
+        return {
+            **container_result,
+            "ok": False,
+            "error": container_result.get("error") or "container_required",
+            "hint": "Install Docker/Podman or enable unshare user namespaces; "
+            "set CENTBOT_REQUIRE_CONTAINER=0 only for non-adversarial local debug.",
+        }
+
+    # Explicit insecure fallback for debug only
+    cmd = _restrictor_only_command(launcher)
     try:
         proc = subprocess.run(
             cmd,
@@ -129,11 +144,26 @@ def run_python_isolated(
             "workdir": str(workdir),
             "command": cmd[:3],
             "restricted": True,
+            "container": False,
+            "backend": "restrictor_only",
+            "insecure_fallback": True,
         }
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "timeout", "workdir": str(workdir), "restricted": True}
+        return {
+            "ok": False,
+            "error": "timeout",
+            "workdir": str(workdir),
+            "backend": "restrictor_only",
+            "insecure_fallback": True,
+        }
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc), "workdir": str(workdir), "restricted": True}
+        return {
+            "ok": False,
+            "error": str(exc),
+            "workdir": str(workdir),
+            "backend": "restrictor_only",
+            "insecure_fallback": True,
+        }
 
 
 def isolate_file(src: Path, sandbox_root: Path) -> Path:
@@ -149,12 +179,23 @@ def isolate_file(src: Path, sandbox_root: Path) -> Path:
 
 
 def sandbox_available() -> bool:
-    """Health check: restrictor blocks network and allows workdir prints."""
-    result = run_python_isolated(code="print('centbot-sandbox-ok')", timeout=10)
+    """Health check: container backend runs print and blocks network."""
+    backends = _container.available_backends()
+    if not (backends.get("docker") or backends.get("podman") or backends.get("unshare_container")):
+        return False
+    result = run_python_isolated(code="print('centbot-sandbox-ok')", timeout=20)
     if not (result.get("ok") and "centbot-sandbox-ok" in (result.get("stdout") or "")):
         return False
-    # Network must fail inside sandbox
-    net = run_python_isolated(code="import socket", timeout=10)
+    if not result.get("container"):
+        return False
+    net = run_python_isolated(code="import socket", timeout=20)
     if net.get("ok"):
         return False
     return True
+
+
+def sandbox_backend_info() -> dict[str, Any]:
+    return {
+        "selected": _container.select_backend(),
+        "available": _container.available_backends(),
+    }

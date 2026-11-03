@@ -20,10 +20,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Live feed trial: discover real tasks, optional local execute, no claims",
     )
+    p.add_argument(
+        "--controlled-live",
+        action="store_true",
+        help="Controlled real-platform test (dry_run): discover + local execute, write evidence JSON",
+    )
     p.add_argument("--discover", action="store_true", help="Fetch and analyze live tasks only")
     p.add_argument("--status", action="store_true", help="Print status JSON and exit")
     p.add_argument("--integrations", action="store_true", help="Verify live platform integrations")
     p.add_argument("--mode", choices=["dry_run", "live"], help="Override system.mode")
+    p.add_argument(
+        "--evidence-out",
+        default="data/controlled-live-evidence.json",
+        help="Evidence path for --controlled-live",
+    )
     p.add_argument(
         "--register-basedagents",
         metavar="NAME",
@@ -84,6 +94,31 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2, default=str))
         engine.shutdown()
         return 0
+    if args.controlled_live:
+        report = engine.run_live_trial(execute_local=True)
+        evidence = {
+            "controlled": True,
+            "mode": report.get("mode"),
+            "claims_allowed": report.get("claims_allowed"),
+            "sandbox": report.get("sandbox"),
+            "integrations": {
+                k: {"ok": bool(v.get("ok")), "sample_task_count": v.get("sample_task_count")}
+                for k, v in (report.get("integrations") or {}).items()
+            },
+            "discovered": report.get("discovered"),
+            "eligible": report.get("eligible"),
+            "samples": report.get("samples"),
+            "executed_ok": sum(1 for r in (report.get("executed") or []) if r.get("ok")),
+            "verification": report.get("verification"),
+            "payments": report.get("payments"),
+        }
+        out = Path(args.evidence_out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(evidence, indent=2, default=str), encoding="utf-8")
+        print(json.dumps({"evidence": str(out), "verification": evidence.get("verification")}, indent=2, default=str))
+        engine.shutdown()
+        ok = bool((evidence.get("verification") or {}).get("live_discovery"))
+        return 0 if ok else 1
     if args.once:
         summary = engine.cycle_once()
         print(json.dumps(summary, indent=2, default=str))

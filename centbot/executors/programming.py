@@ -7,7 +7,7 @@ from typing import Any
 
 from centbot.ai.ollama_client import OllamaClient
 from centbot.executors.base import ExecutionResult, Executor
-from centbot.executors.codegen import generate_solution
+from centbot.executors.codegen import generate_solution, run_independent_validation
 from centbot.sandbox.isolated import run_python_isolated
 
 
@@ -33,7 +33,6 @@ class ProgrammingExecutor(Executor):
                     error=gen_meta.get("error") or "codegen_failed",
                 )
 
-        # If we only have tests, ensure a solution was generated
         if tests.exists() and not solution.exists() and not runner_script.exists():
             gen_meta = generate_solution(task, workdir, ollama=self.ollama)
             if not gen_meta.get("ok"):
@@ -68,15 +67,36 @@ class ProgrammingExecutor(Executor):
 
             attempts.append({"attempt": attempt, "result": result, "codegen": gen_meta})
             if result.get("returncode", 1) == 0:
+                # Visible tests passed — also require independent suite when applicable
+                tests_src = tests.read_text(encoding="utf-8") if tests.exists() else ""
+                indep = run_independent_validation(workdir, task, tests_src)
+                if not indep.get("ok") and not indep.get("skipped"):
+                    attempts[-1]["independent"] = indep
+                    if attempt == 1 and self.ollama and self.ollama.available():
+                        if solution.exists():
+                            solution.unlink()
+                        gen_meta = generate_solution(task, workdir, ollama=self.ollama)
+                        continue
+                    return ExecutionResult(
+                        ok=False,
+                        category=self.category,
+                        output={"codegen": gen_meta, "attempts": attempts, "independent": indep},
+                        artifacts=[str(p) for p in (solution, tests, runner_script) if p.exists()],
+                        error=indep.get("error") or "independent_tests_failed",
+                    )
                 artifacts = [str(p) for p in (solution, tests, runner_script) if p.exists()]
                 return ExecutionResult(
                     ok=True,
                     category=self.category,
-                    output={"run": result, "codegen": gen_meta, "attempts": attempts},
+                    output={
+                        "run": result,
+                        "codegen": gen_meta,
+                        "attempts": attempts,
+                        "independent": indep,
+                    },
                     artifacts=artifacts,
                 )
 
-            # One repair pass: regenerate if AI available
             if attempt == 1 and self.ollama and self.ollama.available():
                 if solution.exists():
                     solution.unlink()
