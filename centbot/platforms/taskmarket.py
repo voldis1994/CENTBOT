@@ -93,6 +93,39 @@ class TaskMarketConnector(PlatformConnector):
             )
         return out
 
+    def register_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """TaskMarket identity = Ethereum wallet. Confirm wallet can authenticate against API."""
+        if not self.wallet:
+            return {
+                "ok": False,
+                "error": "wallet_required",
+                "platform": self.name,
+                "status": "error",
+                "user_action": "set_CENTBOT_ETH_PRIVATE_KEY_or_store_eth_wallet_credential",
+            }
+        try:
+            headers = self._caller_headers()
+            # Probe authenticated read — wallet presence is the account
+            self.client.get_json("/api/tasks", params={"limit": 1}, headers=headers)
+            return {
+                "ok": True,
+                "status": "registered",
+                "platform": self.name,
+                "worker_address": self.wallet.address,
+                "note": "TaskMarket uses wallet signatures; no separate signup API",
+            }
+        except PlatformHTTPError as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "status": exc.status,
+                "platform": self.name,
+                "worker_address": self.wallet.address,
+                "body": exc.body,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "platform": self.name, "status": "error"}
+
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
         if not self.wallet:
             return {"ok": False, "error": "wallet_required", "hint": "Set CENTBOT_ETH_PRIVATE_KEY or credentials eth_wallet"}

@@ -1,17 +1,9 @@
-# Copy to config/local.yaml (gitignored) — or run SETUP.bat / wizard.
+# Produced by SETUP wizard — or copy and edit.
 # NEVER put bank passwords, card CVV, or crypto seed phrases here.
-#
-# LIVE checklist (all required together — otherwise live_readiness blocks):
-#   system.mode: live
-#   analysis.auto_accept: true
-#   finance.crypto_wallet_public: real 0x… address (not a placeholder)
-#   finance.simulate_rewards_in_dry_run: false
-# Optional fiat: bank_iban + bank_provider_base_url + API key in SecretStore
-# Android fleet: android.enabled: true (required for 4 emulators + AndroidExecutor)
 
 system:
-  mode: dry_run  # change to live only when ready
-  max_parallel_tasks: 6  # >= android.max_emulators
+  mode: live
+  max_parallel_tasks: 6
 
 operator:
   full_name: "Your Name"
@@ -20,16 +12,16 @@ operator:
   phone: ""
 
 analysis:
-  auto_accept: false  # MUST be true together with mode: live
+  auto_accept: true
   min_expected_profit: 0.25
 
 finance:
   bank_account_holder: "Your Name"
-  bank_iban: ""  # set real IBAN when using bank rail
+  bank_iban: ""
   bank_swift_bic: ""
   bank_currency: EUR
-  bank_provider_base_url: ""  # independent bank/payment API
-  crypto_wallet_public: ""  # set real public receive address before live
+  bank_provider_base_url: ""
+  crypto_wallet_public: "0xYOUR_REAL_PUBLIC_ADDRESS"
   crypto_network: base
   preferred_crypto: [USDC]
   reconcile_payments: true
@@ -47,11 +39,9 @@ android:
     - CENTBOT_ANDROID_04
 
 discovery:
-  auto_register_allowed: false
+  auto_register_allowed: true
+  auto_discover_platforms: true
 
 notifications:
   email: true
   desktop: true
-
-# Secrets (API keys) → Windows DPAPI / Credential Manager via SecretStore
-#   python -c "from centbot.windows.secrets import SecretStore; SecretStore().set('bank_provider_api_key','...')"

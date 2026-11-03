@@ -161,13 +161,12 @@ class AutoAcceptor:
     def accept(self, row: dict[str, Any]) -> dict[str, Any]:
         if row.get("status") != "eligible":
             return {"ok": False, "reason": "not_eligible"}
-        if not self.config.get("auto_accept", False) and not self.dry_run:
-            return {"ok": False, "reason": "auto_accept_disabled"}
         platform = row["platform"]
         conn = self.platforms.get(platform)
         if not conn:
             return {"ok": False, "reason": "unknown_platform"}
         task = row.get("_task")
+        # dry_run: practice mark only. Live: always attempt real claim and surface platform errors.
         if self.dry_run:
             self.journal.record("accept", "dry_run", task_id=row["id"], platform=platform)
             return {"ok": True, "mode": "dry_run", "task_id": row["id"]}

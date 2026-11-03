@@ -83,6 +83,55 @@ class BountyBookConnector(PlatformConnector):
             )
         return out
 
+    def register_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """BountyBook needs a bearer from wallet nonce login — attempt /auth/nonce when wallet present."""
+        if self.bearer:
+            return {
+                "ok": True,
+                "status": "registered",
+                "platform": self.name,
+                "note": "Bearer token already configured",
+            }
+        if not self.wallet:
+            return {
+                "ok": False,
+                "error": "wallet_and_api_key_required",
+                "platform": self.name,
+                "status": "error",
+                "user_action": "set_BOUNTYBOOK_API_KEY_after_wallet_nonce_login",
+            }
+        # Honest attempt: some deployments expose nonce login
+        try:
+            nonce = self.client.post_json("/auth/nonce", {"address": self.wallet.address})
+            if isinstance(nonce, dict) and nonce.get("token"):
+                self.bearer = str(nonce["token"])
+                return {
+                    "ok": True,
+                    "status": "registered",
+                    "platform": self.name,
+                    "api_token": self.bearer,
+                    "address": self.wallet.address,
+                }
+            return {
+                "ok": False,
+                "error": "nonce_login_incomplete",
+                "platform": self.name,
+                "status": "needs_user",
+                "nonce": nonce,
+                "user_action": "complete_wallet_signature_login_and_set_BOUNTYBOOK_API_KEY",
+            }
+        except PlatformHTTPError as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "status": exc.status,
+                "platform": self.name,
+                "user_action": "set_BOUNTYBOOK_API_KEY_from_manual_wallet_login",
+                "body": exc.body,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "platform": self.name, "status": "error"}
+
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
         if not self.bearer:
             return {

@@ -254,24 +254,61 @@ class WindowsSetup:
         return {"ok": False, "error": "winget_missing"}
 
     def verify_all(self) -> dict[str, Any]:
+        """Honest readiness — Docker/SDK/AVD must actually respond, not just be skipped."""
         detected = self.detect_components()
-        checks = {
-            "python_venv": self._venv_python().exists() or True,  # system python acceptable
-            "git": detected["git"]["ok"],
-            "pip_requirements": True,  # verified by import smoke below
-            "playwright_browsers": detected["playwright"]["ok"],
+        checks: dict[str, Any] = {
+            "python": bool(sys.executable),
+            "git": bool(detected["git"]["ok"]),
+            "playwright_module": bool(detected["playwright"]["ok"]),
         }
         try:
             import yaml  # noqa: F401
             import flask  # noqa: F401
             import requests  # noqa: F401
+
             checks["imports"] = True
         except ImportError as exc:
             checks["imports"] = False
             checks["import_error"] = str(exc)
-        ok = all(bool(v) for k, v in checks.items() if k != "import_error")
+
+        # Docker: must answer `docker info` (daemon up), not merely exist on PATH
+        if which("docker"):
+            docker_info = self.runner(["docker", "info"], {"timeout": 45})
+            checks["docker"] = bool(docker_info.get("ok"))
+            checks["docker_detail"] = (docker_info.get("stderr") or docker_info.get("stdout") or "")[:300]
+        else:
+            checks["docker"] = False
+            checks["docker_detail"] = "docker_not_on_path"
+
+        # Android SDK tools
+        checks["adb"] = bool(detected["adb"]["ok"])
+        checks["emulator_bin"] = bool(detected["emulator"]["ok"])
+        avd_names: list[str] = []
+        if checks["emulator_bin"]:
+            from centbot.windows.avd import AVD_NAMES, list_avds
+
+            avd_names = list_avds()
+            present = [n for n in AVD_NAMES if n in set(avd_names)]
+            checks["centbot_avds_present"] = present
+            checks["centbot_avds_ok"] = len(present) >= 1
+        else:
+            checks["centbot_avds_present"] = []
+            checks["centbot_avds_ok"] = False
+
+        required = ["python", "git", "imports", "playwright_module"]
+        # On Windows, also require docker + adb/emulator/avds for "complete" setup
+        if sys.platform.startswith("win"):
+            required.extend(["docker", "adb", "emulator_bin", "centbot_avds_ok"])
+        ok = all(bool(checks.get(k)) for k in required)
         self.progress.mark("verify", ok=ok, detail=json_dumps(checks))
-        return {"ok": ok, "checks": checks, "detected": detected}
+        if ok:
+            # Mark setup complete only when verify truly passes
+            self.progress._data["completed"] = True
+            self.progress.save()
+        else:
+            self.progress._data["completed"] = False
+            self.progress.save()
+        return {"ok": ok, "checks": checks, "detected": detected, "required": required}
 
     def run(self, *, create_avds: bool = True) -> dict[str, Any]:
         steps: list[dict[str, Any]] = []

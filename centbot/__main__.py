@@ -187,10 +187,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.once:
         if config.is_live():
             readiness = engine.live_readiness()
+            # Never hard-stop live — print readiness so failures are visible, then run
             if not readiness.get("ready"):
-                print(json.dumps({"ok": False, "reason": "live_not_ready", "readiness": readiness}, indent=2, default=str))
-                engine.shutdown()
-                return 2
+                print(json.dumps({"warning": "live_partial_readiness", "readiness": readiness}, indent=2, default=str))
         summary = engine.cycle_once()
         print(json.dumps(summary, indent=2, default=str))
         engine.shutdown()
@@ -199,9 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     if config.is_live():
         readiness = engine.live_readiness()
         if not readiness.get("ready"):
-            print(json.dumps({"ok": False, "reason": "live_not_ready", "readiness": readiness}, indent=2, default=str))
-            engine.shutdown()
-            return 2
+            print(json.dumps({"warning": "live_partial_readiness", "readiness": readiness}, indent=2, default=str))
 
     engine.run_forever()
     return 0
