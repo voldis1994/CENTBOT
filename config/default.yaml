@@ -61,8 +61,8 @@ platforms:
     base_url: https://api.basedagents.ai
     min_usdc: 0.1
     limit: 50
-    # keypair_path: data/basedagents-keypair.json
-    # or env BASEDAGENTS_KEYPAIR_PATH
+    keypair_path: data/basedagents-keypair.json
+    auto_register: true
   taskmarket:
     enabled: true
     base_url: https://api.taskmarket.dev
