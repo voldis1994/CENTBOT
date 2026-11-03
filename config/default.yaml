@@ -1,0 +1,115 @@
+# CENTBOT default configuration
+system:
+  name: CENTBOT
+  mode: dry_run  # dry_run | live
+  timezone: Europe/London
+  cycle_interval_seconds: 30
+  max_parallel_tasks: 4
+  emergency_stop_file: data/EMERGENCY_STOP
+  pid_file: data/centbot.pid
+
+database:
+  path: data/centbot.db
+
+logging:
+  directory: logs
+  level: INFO
+  max_bytes: 10485760
+  backup_count: 10
+
+monitoring:
+  cpu_warn_percent: 85
+  ram_warn_percent: 85
+  gpu_warn_percent: 90
+  internet_check_url: https://1.1.1.1
+  internet_check_interval_seconds: 60
+  sample_interval_seconds: 15
+
+recovery:
+  enabled: true
+  max_restarts: 5
+  restart_backoff_seconds: 10
+
+backup:
+  enabled: true
+  directory: backups
+  interval_hours: 6
+  keep_count: 14
+
+security:
+  credentials_file: data/credentials.enc
+  rate_limit_per_minute: 30
+  sandbox_dir: sandbox
+
+ai:
+  ollama_base_url: http://127.0.0.1:11434
+  model: tinyllama
+  enabled: false
+  timeout_seconds: 60
+
+platforms:
+  jobbi:
+    enabled: true
+    base_url: ""
+    api_key_env: JOBBI_API_KEY
+  basedagents:
+    enabled: true
+    base_url: ""
+    api_key_env: BASEDAGENTS_API_KEY
+  taskmarket:
+    enabled: true
+    base_url: ""
+    api_key_env: TASKMARKET_API_KEY
+  bountybook:
+    enabled: true
+    base_url: ""
+    api_key_env: BOUNTYBOOK_API_KEY
+  agentizable:
+    enabled: true
+    base_url: ""
+    api_key_env: AGENTIZABLE_API_KEY
+
+discovery:
+  poll_interval_seconds: 60
+  min_reward: 1.0
+  currencies: [USD, EUR, GBP, USDT, BTC, ETH]
+  duplicate_similarity_threshold: 0.92
+
+analysis:
+  min_expected_profit: 0.5
+  min_reward_probability: 0.4
+  max_estimated_hours: 8
+  reject_unfunded: true
+  reject_untrusted_payer_below: 0.3
+  auto_accept: false  # requires explicit enable + live mode
+
+finance:
+  crypto_wallet_public: ""  # public receive address only
+  supported_currencies: [USD, EUR, GBP, USDT, BTC, ETH]
+  default_currency: USD
+  withdrawal_requires_manual_approval: true
+  stop_platform_after_losses: 3
+  stop_platform_loss_window_hours: 72
+
+android:
+  enabled: false
+  adb_path: adb
+  emulator_path: emulator
+  max_emulators: 2
+  default_avd: CentBot_API_30
+
+browser:
+  enabled: true
+  headless: true
+  timeout_ms: 30000
+  user_agent: "CENTBOT/1.0 (authorized automation; respect robots.txt)"
+
+dashboard:
+  host: 127.0.0.1
+  port: 8787
+  enabled: true
+
+profit_optimization:
+  enabled: true
+  learn_from_rewards: true
+  rebalance_every_cycles: 20

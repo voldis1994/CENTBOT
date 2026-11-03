@@ -1,0 +1,15 @@
+# Copy to config/local.yaml (gitignored) and customize.
+system:
+  mode: dry_run
+
+finance:
+  crypto_wallet_public: "YOUR_PUBLIC_RECEIVE_ADDRESS"
+
+platforms:
+  jobbi:
+    base_url: "https://api.example-jobbi.invalid"
+  extra:
+    - name: customsource
+      enabled: true
+      api_key_env: CUSTOMSOURCE_API_KEY
+      demo_tasks: []
