@@ -60,7 +60,10 @@ def build_local_yaml(answers: dict[str, Any]) -> dict[str, Any]:
     if isinstance(preferred_crypto, str):
         preferred_crypto = [c.strip() for c in preferred_crypto.split(",") if c.strip()]
     return {
-        "system": {"mode": mode},
+        "system": {
+            "mode": mode,
+            "max_parallel_tasks": int(answers.get("max_parallel_tasks") or 6),
+        },
         "operator": {
             "full_name": answers.get("full_name") or "",
             "country": answers.get("country") or "",
@@ -68,7 +71,9 @@ def build_local_yaml(answers: dict[str, Any]) -> dict[str, Any]:
             "phone": answers.get("phone") or "",
         },
         "analysis": {
-            "auto_accept": mode == "live" and bool(answers.get("auto_accept", False)),
+            # Live without auto_accept can never claim — default True when mode is live
+            "auto_accept": mode == "live"
+            and bool(answers["auto_accept"] if "auto_accept" in answers else True),
             "min_expected_profit": float(answers.get("min_profit") or 0.25),
             "preferred_categories": task_types,
         },
@@ -210,9 +215,14 @@ def run_interactive_wizard(*, root: Path | None = None) -> dict[str, Any]:
         "notify_email": _prompt("E-pasta paziņojumi (y/n)", "y").lower().startswith("y"),
         "notify_desktop": _prompt("Darbvirsmas paziņojumi (y/n)", "y").lower().startswith("y"),
         "auto_register": _prompt("Atļaut automātisku platformu reģistrāciju (y/n)", "n").lower().startswith("y"),
-        "auto_accept": _prompt("Live auto-accept uzdevumus (y/n)", "n").lower().startswith("y"),
         "mode": _prompt("Darbības režīms (dry_run/live)", "dry_run"),
     }
+    mode = str(answers["mode"] or "dry_run").lower()
+    # Live needs auto_accept=true or claims stay blocked — default yes when live
+    aa_default = "y" if mode == "live" else "n"
+    answers["auto_accept"] = _prompt(
+        "Live auto-accept uzdevumus (y/n)", aa_default
+    ).lower().startswith("y")
     return apply_answers(answers, root=root, allow_partial=True)
 
 

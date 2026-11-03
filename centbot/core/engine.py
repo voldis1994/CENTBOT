@@ -143,18 +143,21 @@ class CentBotEngine:
         ]
         if not isinstance(avds, list):
             avds = ["CENTBOT_ANDROID_01", "CENTBOT_ANDROID_02", "CENTBOT_ANDROID_03", "CENTBOT_ANDROID_04"]
+        android_enabled = bool(config.get("android.enabled", False))
+        android_slots = int(config.get("android.max_emulators", 4) or 4) if android_enabled else 0
         self.emulator = EmulatorManager(
             emulator_path=str(config.get("android.emulator_path", "emulator")),
             adb_path=str(config.get("android.adb_path", "adb")),
-            max_emulators=int(config.get("android.max_emulators", 4)),
+            max_emulators=int(config.get("android.max_emulators", 4) or 4),
             default_avd=str(config.get("android.default_avd", "CENTBOT_ANDROID_01")),
             avds=[str(x) for x in avds],
+            enabled=android_enabled,
         )
         from centbot.workers.distributor import SmartWorkDistributor
 
         self.distributor = SmartWorkDistributor(
-            max_pc=int(config.get("system.max_parallel_tasks", 4) or 4),
-            android_slots=int(config.get("android.max_emulators", 4) or 4),
+            max_pc=int(config.get("system.max_parallel_tasks", 6) or 6),
+            android_slots=android_slots,
         )
         self._running = False
         self._cycles = 0
@@ -192,6 +195,8 @@ class CentBotEngine:
 
     def live_readiness(self, integrations: dict[str, Any] | None = None) -> dict[str, Any]:
         """Honest gate: what is missing before real claims/submits/payments can succeed."""
+        from centbot.core.consistency import audit_config
+
         live = self.config.is_live()
         blockers: list[str] = []
         if not live:
@@ -218,15 +223,23 @@ class CentBotEngine:
             claimable.append(name)
         if live and not claimable:
             blockers.append("no_claimable_live_platform")
+        consistency = audit_config(self.config)
+        # Merge consistency blockers that apply in live (avoid dupes)
+        for b in consistency.get("blockers") or []:
+            if b not in blockers and (live or b == "finance.simulate_rewards_in_dry_run_must_be_false"):
+                if b.startswith("live_") or "placeholder" in b or "simulate" in b:
+                    blockers.append(b)
         return {
             "live": live,
             "ready": live and not blockers and bool(claimable),
             "blockers": blockers,
+            "warnings": list(consistency.get("warnings") or []),
             "claimable_platforms": claimable,
             "auto_accept": bool(self.config.get("analysis.auto_accept", False)),
             "verify_on_chain": bool(self.config.get("finance.verify_on_chain", True)),
             "bank_provider_configured": self._bank_provider is not None,
             "bank_iban_set": bool(str(self.config.get("finance.bank_iban") or "").strip()),
+            "consistency": consistency,
         }
 
     def _register_default_workers(self) -> None:
@@ -271,6 +284,11 @@ class CentBotEngine:
             return registration_status()
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc), "accounts": {}}
+
+    def _consistency_report(self) -> dict[str, Any]:
+        from centbot.core.consistency import audit_config
+
+        return audit_config(self.config)
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
         """Persist safe settings to config/local.yaml from the control panel."""
@@ -425,9 +443,12 @@ class CentBotEngine:
                 "min_expected_profit": self.config.get("analysis.min_expected_profit"),
                 "bank_iban_set": bool(str(self.config.get("finance.bank_iban") or "").strip()),
                 "crypto_wallet_set": bool(str(self.config.get("finance.crypto_wallet_public") or "").strip()),
+                "android_enabled": bool(self.config.get("android.enabled", False)),
                 "android_max": int(self.config.get("android.max_emulators", 4) or 4),
+                "max_parallel_tasks": int(self.config.get("system.max_parallel_tasks", 6) or 6),
                 "operator_email": (self.config.section("operator") or {}).get("email") or "",
             },
+            "consistency": self._consistency_report(),
         }
 
     def discover_and_analyze(self) -> list[dict[str, Any]]:
@@ -767,6 +788,29 @@ class CentBotEngine:
                 self.journal.record("payment_received", "duplicate", task_id=row["id"], tx_ref=tx_ref, method=method)
         return updates
 
+    def _sync_android_workers(self) -> None:
+        """Bind ADB serials to distributor when android.enabled; else zero Android capacity."""
+        if not bool(self.config.get("android.enabled", False)):
+            for i in range(1, 5):
+                wid = f"android_{i}"
+                if wid in self.distributor.workers:
+                    self.distributor.workers[wid].capacity = 0
+                    self.distributor.workers[wid].serial = None
+            return
+        try:
+            from centbot.android.adb import devices
+
+            serials = devices(str(self.config.get("android.adb_path", "adb")))
+        except Exception:  # noqa: BLE001
+            serials = []
+        # Restore capacity for configured slots then bind
+        max_slots = int(self.config.get("android.max_emulators", 4) or 4)
+        for i in range(1, 5):
+            wid = f"android_{i}"
+            if wid in self.distributor.workers:
+                self.distributor.workers[wid].capacity = 1 if i <= max_slots else 0
+        self.distributor.bind_android_serials(serials)
+
     def cycle_once(self) -> dict[str, Any]:
         if self.emergency.is_active():
             return {"ok": False, "reason": "emergency_stop"}
@@ -777,6 +821,7 @@ class CentBotEngine:
             self.db.add_alert("warning", msg, source="monitor")
             self.journal.record("monitor_warning", "warn", message=msg)
 
+        self._sync_android_workers()
         readiness = self.live_readiness() if self.config.is_live() else {"live": False, "ready": False}
         analyzed = self.discover_and_analyze()
         launched = self.schedule_eligible()

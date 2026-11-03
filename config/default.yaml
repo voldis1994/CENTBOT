@@ -4,7 +4,8 @@ system:
   mode: dry_run  # dry_run = discover/analyze/execute locally, no claim/submit | live = real claims
   timezone: Europe/London
   cycle_interval_seconds: 60
-  max_parallel_tasks: 2
+  # Must be >= android.max_emulators so 4 Android workers are not starved by the pool
+  max_parallel_tasks: 6
   emergency_stop_file: data/EMERGENCY_STOP
   pid_file: data/centbot.pid
 
@@ -120,7 +121,9 @@ finance:
   min_confirmations: 1
 
 android:
-  enabled: false  # wizard/SETUP enables on Windows after AVD create
+  # Default false until wizard/SETUP writes local.yaml (enabled: true + AVDs).
+  # If max_emulators>=1 but enabled=false, START skips fleet and AndroidExecutor refuses tasks.
+  enabled: false
   adb_path: adb
   emulator_path: emulator
   max_emulators: 4
