@@ -75,16 +75,14 @@ set "SSL_CERT_FILE=%CD%\certs\cacert.pem"
 set "REQUESTS_CA_BUNDLE=%CD%\certs\cacert.pem"
 set "CURL_CA_BUNDLE=%CD%\certs\cacert.pem"
 
-REM Load signing key for TaskMarket/BountyBook claims (created by SET_ETH_KEY.bat)
+REM Load signing key (SET_ETH_KEY.bat writes data\eth.env; also credentials.enc)
+set "CENTBOT_ROOT=%CD%"
 if exist "%CD%\data\eth.env" (
-  for /f "usebackq tokens=1* delims==" %%A in ("%CD%\data\eth.env") do (
-    if /I "%%A"=="CENTBOT_ETH_PRIVATE_KEY" set "CENTBOT_ETH_PRIVATE_KEY=%%B"
+  for /f "usebackq eol=# delims=" %%L in ("%CD%\data\eth.env") do (
+    echo %%L | findstr /I "CENTBOT_ETH_PRIVATE_KEY=" >nul && set "%%L"
   )
 )
-if not defined CENTBOT_ETH_PRIVATE_KEY (
-  echo [CENTBOT] INFO: nav ETH signing key — TaskMarket skip; BasedAgents var stradat.
-  echo           Velak: SET_ETH_KEY.bat
-)
+"%PY%" -c "from centbot.windows.eth_key import signing_wallet_status; s=signing_wallet_status(); print('[CENTBOT] ETH:', 'OK', (s.get('address') or '')[:10] if s.get('loaded') else 'NAV — SET_ETH_KEY.bat')"
 
 REM Load Android SDK paths (created by INSTALL_ANDROID.bat)
 if exist "%CD%\data\android.env" (
