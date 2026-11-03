@@ -68,6 +68,8 @@ platforms:
     base_url: https://api.taskmarket.dev
     min_reward: 0.5
     limit: 50
+    mode: claim  # only claim-mode tasks are auto-claimable via /claim
+    allow_stake_claims: false  # stakeRequired needs x402; skip until paid
     wallet_env: CENTBOT_ETH_PRIVATE_KEY
   bountybook:
     enabled: true
