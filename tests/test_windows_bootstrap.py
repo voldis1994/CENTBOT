@@ -272,3 +272,34 @@ def test_setup_bat_treats_wizard_success_as_success():
     assert "WIZ_EC" in setup
     assert "optional components incomplete" in setup
     assert "Config OK" in setup
+
+
+def test_pick_port_bumps_when_busy():
+    import socket
+
+    from centbot.dashboard.portutil import pick_port
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    busy = sock.getsockname()[1]
+    try:
+        choice = pick_port("127.0.0.1", busy, attempts=5)
+        assert choice["ok"] is True
+        assert choice["port"] != busy
+        assert choice["bumped"] is True
+    finally:
+        sock.close()
+
+
+def test_exe_packaging_files_exist():
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "BUILD_EXE.bat").exists()
+    assert (root / "CENTBOT.bat").exists()
+    assert (root / "centbot.spec").exists()
+    assert (root / "centbot" / "windows" / "exe_entry.py").exists()
+    build = (root / "BUILD_EXE.bat").read_text(encoding="utf-8", errors="ignore")
+    assert "PyInstaller" in build
+    start = (root / "START.bat").read_text(encoding="utf-8", errors="ignore")
+    assert "CENTBOT.exe" in start
+    assert "address already in use" in start

@@ -896,14 +896,31 @@ class CentBotEngine:
         pid_path.write_text(str(__import__("os").getpid()), encoding="utf-8")
 
         if self.config.get("dashboard.enabled", True):
+            from centbot.dashboard.app import read_dashboard_state
+
             app = create_dashboard(
                 self.status,
                 lambda: self.emergency.trigger("dashboard"),
                 ack_alert=self.acknowledge_alert,
                 update_settings=self.update_settings,
             )
-            start_dashboard_thread(app, str(self.config.get("dashboard.host", "127.0.0.1")), int(self.config.get("dashboard.port", 8787)))
-            log.info("Dashboard on http://%s:%s", self.config.get("dashboard.host"), self.config.get("dashboard.port"))
+            preferred = int(self.config.get("dashboard.port", 8787))
+            host = str(self.config.get("dashboard.host", "127.0.0.1"))
+            try:
+                start_dashboard_thread(app, host, preferred)
+                state = read_dashboard_state()
+                actual_port = int(state.get("port") or preferred)
+                if state.get("bumped"):
+                    log.warning(
+                        "Dashboard port %s busy — using %s instead (%s)",
+                        preferred,
+                        actual_port,
+                        state.get("reason"),
+                    )
+                log.info("Dashboard on http://%s:%s", "127.0.0.1" if host in {"0.0.0.0", "::"} else host, actual_port)
+            except OSError as exc:
+                log.error("Dashboard failed to bind: %s", exc)
+                self.db.add_alert("critical", f"Dashboard bind failed: {exc}", source="dashboard")
 
         self.journal.record("start", "ok", mode=self.config.get("system.mode"), integrations=self.integration_report())
         interval = float(self.config.get("system.cycle_interval_seconds", 30))

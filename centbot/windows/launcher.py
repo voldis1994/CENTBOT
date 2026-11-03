@@ -46,12 +46,29 @@ def already_running() -> bool:
     try:
         pid = int(PID_FILE.read_text(encoding="utf-8").strip())
     except ValueError:
+        try:
+            PID_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
     try:
         os.kill(pid, 0)
         return True
     except OSError:
+        # Stale pid file — clear so port/address is not "owned" forever
+        try:
+            PID_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
+
+
+def clear_stale_runtime() -> dict[str, Any]:
+    """Drop dead pid / unlock start when previous engine crashed."""
+    cleared = False
+    if PID_FILE.exists() and not already_running():
+        cleared = True
+    return {"cleared_stale_pid": cleared, "running": already_running()}
 
 
 def start_emulators(*, adb: str = "adb", emulator: str = "emulator", count: int | None = None) -> dict[str, Any]:
@@ -141,16 +158,46 @@ def stop_centbot_emulators(*, adb: str = "adb") -> dict[str, Any]:
 
 
 def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dict[str, Any]:
+    clear_stale_runtime()
     if already_running():
-        return {"ok": False, "error": "already_running", "pid_file": str(PID_FILE)}
+        from centbot.dashboard.app import read_dashboard_state
+
+        state = read_dashboard_state()
+        url = state.get("url") or "http://127.0.0.1:8787/"
+        if open_dashboard:
+            _open_browser(str(url))
+        return {
+            "ok": False,
+            "error": "already_running",
+            "pid_file": str(PID_FILE),
+            "dashboard": url,
+            "hint": "Use STOP.bat / CENTBOT.exe --stop, then start again",
+        }
     if (ROOT / "data" / "EMERGENCY_STOP").exists():
         return {"ok": False, "error": "emergency_stop_active"}
-    cmd = [sys.executable, "-m", "centbot"]
+
+    from centbot.core.config import Config
+    from centbot.dashboard.portutil import wait_for_port
+
+    cfg = Config()
+    preferred = int(cfg.get("dashboard.port", 8787) or 8787)
+    host = str(cfg.get("dashboard.host", "127.0.0.1") or "127.0.0.1")
+
+    log_dir = ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_log = open(log_dir / "engine.stdout.log", "a", encoding="utf-8")  # noqa: SIM115
+    err_log = open(log_dir / "engine.stderr.log", "a", encoding="utf-8")  # noqa: SIM115
+
+    # Prefer packaged exe when present (same folder as repo root)
+    exe = ROOT / "CENTBOT.exe"
+    if exe.exists() and sys.platform.startswith("win"):
+        cmd = [str(exe), "--engine"]
+    else:
+        cmd = [sys.executable, "-m", "centbot"]
     if mode:
         cmd += ["--mode", mode]
     env = os.environ.copy()
     env["CENTBOT_LAUNCHED_BY"] = "START.bat"
-    # Detached on Windows via START.bat; here we spawn subprocess
     creationflags = 0
     if sys.platform.startswith("win"):
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -158,17 +205,53 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
         cmd,
         cwd=str(ROOT),
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=out_log,
+        stderr=err_log,
         creationflags=creationflags,
         start_new_session=not sys.platform.startswith("win"),
     )
-    state = {"engine_pid": proc.pid, "started_at": time.time(), "open_dashboard": open_dashboard}
+    state = {
+        "engine_pid": proc.pid,
+        "started_at": time.time(),
+        "open_dashboard": open_dashboard,
+        "preferred_port": preferred,
+    }
     _write_state(state)
-    dashboard = "http://127.0.0.1:8787/"
-    if open_dashboard:
-        _open_browser(dashboard)
-    return {"ok": True, "pid": proc.pid, "dashboard": dashboard}
+
+    # Wait until dashboard actually listens — fixes ERR_CONNECTION_REFUSED from early browser open
+    from centbot.dashboard.app import read_dashboard_state
+
+    ready = False
+    url = f"http://127.0.0.1:{preferred}/"
+    deadline = time.time() + 50
+    while time.time() < deadline:
+        dash = read_dashboard_state()
+        port = int(dash.get("port") or preferred)
+        probe_host = "127.0.0.1" if host in {"0.0.0.0", "::", "localhost"} else host
+        if wait_for_port(probe_host, port, timeout_s=0.6, interval_s=0.2):
+            url = str(dash.get("url") or f"http://{probe_host}:{port}/")
+            ready = True
+            state["dashboard"] = url
+            state["port"] = port
+            state["bumped"] = bool(dash.get("bumped"))
+            _write_state(state)
+            break
+        # Engine died before binding
+        if proc.poll() is not None:
+            break
+        time.sleep(0.4)
+
+    if open_dashboard and ready:
+        _open_browser(url)
+    return {
+        "ok": ready or proc.poll() is None,
+        "pid": proc.pid,
+        "dashboard": url,
+        "dashboard_ready": ready,
+        "hint": None
+        if ready
+        else "Dashboard not reachable yet — check logs/engine.stderr.log; port may still be starting",
+    }
 
 
 def stop_engine() -> dict[str, Any]:
@@ -187,11 +270,27 @@ def stop_engine() -> dict[str, Any]:
             PID_FILE.unlink(missing_ok=True)
         except OSError:
             pass
+    # Also kill launcher-tracked engine pid if present
+    state = _read_state()
+    tracked = state.get("engine_pid")
+    if tracked and tracked != result.get("killed_pid"):
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.run(["taskkill", "/PID", str(tracked), "/T", "/F"], capture_output=True, check=False)
+            else:
+                os.kill(int(tracked), 15)
+            result["killed_tracked_pid"] = tracked
+        except (TypeError, ValueError, OSError):
+            pass
     emu = stop_centbot_emulators()
     result["emulators"] = emu
-    state = _read_state()
     state["stopped_at"] = time.time()
     _write_state(state)
+    dash_state = ROOT / "data" / "runtime" / "dashboard.json"
+    try:
+        dash_state.unlink(missing_ok=True)
+    except OSError:
+        pass
     result["ok"] = True
     return result
 
