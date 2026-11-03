@@ -1,7 +1,12 @@
 @echo off
-REM Double-click: Python START by default (reliable). Set CENTBOT_USE_EXE=1 to force exe.
-SETLOCAL EnableExtensions
+REM Always FIX path: never relaunch broken CENTBOT.exe
+SETLOCAL
 cd /d "%~dp0"
-call "%~dp0START.bat" %*
+if exist FIX_NOW.bat (
+  call FIX_NOW.bat
+) else (
+  call STOP.bat
+  call START.bat
+)
 ENDLOCAL
 exit /b %ERRORLEVEL%
