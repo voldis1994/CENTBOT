@@ -40,19 +40,31 @@ def _hire_blocks_worker(task: dict[str, Any], worker_address: str | None) -> boo
     return reserved.lower() != worker_address.lower()
 
 
-def _is_auto_claimable(task: dict[str, Any], worker_address: str | None) -> bool:
-    """Only free claim-mode tasks without foreign hire / stake can be auto-claimed."""
-    if str(task.get("status") or "") != "open":
-        return False
+def _skip_reason(task: dict[str, Any], worker_address: str | None) -> str | None:
+    """Why a TaskMarket row must not be auto-accepted (None = workable)."""
+    status = str(task.get("status") or "open").lower()
+    if status and status != "open":
+        return "unavailable"
     if task.get("claimedBy"):
-        return False
-    if str(task.get("mode") or "").lower() != "claim":
-        return False
-    if bool(task.get("stakeRequired")):
-        return False
-    if _hire_blocks_worker(task, worker_address):
-        return False
-    return True
+        return "already_claimed"
+    mode = str(task.get("mode") or "").lower()
+    if mode in {"pitch", "auction"}:
+        return "not_claim_mode"
+    if mode == "claim":
+        if bool(task.get("stakeRequired")):
+            return "stake_payment_required"
+        if _hire_blocks_worker(task, worker_address):
+            return "hire_reserved"
+        return None
+    # bounty / benchmark: no /claim step — local accept then submit
+    if mode in {"bounty", "benchmark", ""}:
+        return None
+    return "not_claim_mode"
+
+
+def _is_auto_claimable(task: dict[str, Any], worker_address: str | None) -> bool:
+    """True when CENTBOT can auto-accept (claim or bounty direct-submit)."""
+    return _skip_reason(task, worker_address) is None
 
 
 class TaskMarketConnector(PlatformConnector):
@@ -73,8 +85,8 @@ class TaskMarketConnector(PlatformConnector):
             self.wallet = wallet_from_store(credential_getter("eth_wallet"))
         self.min_reward = float(config.get("min_reward", 0) or 0)
         self.limit = int(config.get("limit", 50))
-        # Prefer claim-mode feed for auto-accept; bounty/pitch need different flows.
-        self.mode = config.get("mode", "claim")
+        # None/empty = all open modes (bounty + claim). Stake/hire still soft-skipped.
+        self.mode = config.get("mode") or None
         self.allow_stake_claims = bool(config.get("allow_stake_claims", False))
 
     def _caller_headers(self) -> dict[str, str]:
@@ -104,10 +116,11 @@ class TaskMarketConnector(PlatformConnector):
             tags = t.get("tags") or []
             escrow = t.get("escrowTxHash")
             funded = bool(escrow) or amount > 0
-            claimable = _is_auto_claimable(t, worker)
-            if bool(t.get("stakeRequired")) and self.allow_stake_claims and str(t.get("mode") or "").lower() == "claim":
-                # Stake claims need x402 payment — still not auto-claimable until paid.
-                claimable = False
+            skip = _skip_reason(t, worker)
+            claimable = skip is None
+            raw_meta: dict[str, Any] = {"source": "taskmarket", "task": t}
+            if skip:
+                raw_meta["skip_reason"] = skip
             out.append(
                 PlatformTask(
                     platform=self.name,
@@ -125,7 +138,7 @@ class TaskMarketConnector(PlatformConnector):
                     claimable=claimable,
                     automation_allowed=True,
                     payment_state="escrowed" if escrow else "promised",
-                    raw={"source": "taskmarket", "task": t},
+                    raw=raw_meta,
                 )
             )
         return out
@@ -176,25 +189,34 @@ class TaskMarketConnector(PlatformConnector):
             raw_task = {}
 
         mode = str(raw_task.get("mode") or "").lower()
-        if mode and mode != "claim":
+        # Bounty/benchmark: no /claim — book locally and submit artifacts later.
+        if mode in {"bounty", "benchmark"}:
+            return {
+                "ok": True,
+                "mode": "direct_submit",
+                "external_id": task.external_id,
+                "note": "bounty/benchmark — claim nav vajadzīgs, iesniegšana caur /submissions",
+            }
+        if mode in {"pitch", "auction"}:
             return {
                 "ok": False,
                 "error": "not_claim_mode",
                 "reason": "not_claim_mode",
                 "status": 400,
-                "hint": "TaskMarket /claim pieņem tikai mode=claim; bounty/pitch nav auto-claim.",
+                "hint": "Pitch/auction nav auto-claim — vajag citu TaskMarket plūsmu.",
                 "external_id": task.external_id,
             }
-        if bool(raw_task.get("stakeRequired")) and not self.allow_stake_claims:
+        skip = _skip_reason(raw_task, self.wallet.address)
+        if skip == "stake_payment_required" and not self.allow_stake_claims:
             return {
                 "ok": False,
                 "error": "stake_payment_required",
                 "reason": "stake_payment_required",
                 "status": 402,
-                "hint": "Šim claim vajag x402 stake maksājumu (Base USDC) — CENTBOT to vēl neapmaksā automātiski.",
+                "hint": "Šim claim vajag x402 stake (~1 USDC Base) — izlaists, kamēr stake nav ieslēgts.",
                 "external_id": task.external_id,
             }
-        if _hire_blocks_worker(raw_task, self.wallet.address):
+        if skip == "hire_reserved":
             hire = raw_task.get("hire") if isinstance(raw_task.get("hire"), dict) else {}
             return {
                 "ok": False,
@@ -202,6 +224,13 @@ class TaskMarketConnector(PlatformConnector):
                 "reason": "hire_reserved",
                 "status": 403,
                 "hint": f"Hire rezervēts citam worker: {hire.get('worker')}",
+                "external_id": task.external_id,
+            }
+        if skip and skip not in {"stake_payment_required"}:
+            return {
+                "ok": False,
+                "error": skip,
+                "reason": skip,
                 "external_id": task.external_id,
             }
 

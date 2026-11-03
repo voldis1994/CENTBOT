@@ -60,5 +60,12 @@ def taskmarket_submit_message(task_id: str) -> str:
 
 
 def taskmarket_read_message(address: str) -> str:
-    # Caller-header read auth keeps a space (docs: taskmarket:read: <address>).
-    return f"taskmarket:read: {address}"
+    # Official CLI: taskmarket:read:{lowercaseAddress} (no space).
+    return f"taskmarket:read:{str(address).lower()}"
+
+
+def taskmarket_submit_message_with_keys(task_id: str, artifact_keys: list[str]) -> str:
+    """Submit-from-keys binds artifactKey list: submit:{taskId}:{key1,key2}."""
+    if not artifact_keys:
+        return taskmarket_submit_message(task_id)
+    return f"taskmarket:market:submit:{task_id}:{','.join(artifact_keys)}"

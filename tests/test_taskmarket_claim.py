@@ -27,8 +27,8 @@ def test_claim_and_submit_messages_have_no_space():
     assert taskmarket_claim_message(tid) == f"taskmarket:market:claim:{tid}"
     assert "claim: " not in taskmarket_claim_message(tid)
     assert taskmarket_submit_message(tid) == f"taskmarket:market:submit:{tid}"
-    # Read auth keeps a space before the address
-    assert taskmarket_read_message("0xAbc") == "taskmarket:read: 0xAbc"
+    # Official CLI read auth: no space + lowercase address
+    assert taskmarket_read_message("0xAbC") == "taskmarket:read:0xabc"
 
 
 def test_claim_signature_recovers_worker_address():
@@ -58,7 +58,8 @@ def test_auto_claimable_filters_stake_bounty_hire():
         "hire": None,
     }
     assert _is_auto_claimable(base, worker) is True
-    assert _is_auto_claimable({**base, "mode": "bounty"}, worker) is False
+    # Bounty is workable via direct submit (no /claim)
+    assert _is_auto_claimable({**base, "mode": "bounty"}, worker) is True
     assert _is_auto_claimable({**base, "stakeRequired": True}, worker) is False
     assert _is_auto_claimable({**base, "claimedBy": other}, worker) is False
     assert _is_auto_claimable({**base, "hire": {"worker": other, "kind": "reserved"}}, worker) is False
@@ -67,7 +68,7 @@ def test_auto_claimable_filters_stake_bounty_hire():
     assert _hire_blocks_worker({"hire": {"worker": worker}}, worker) is False
 
 
-def test_accept_task_skips_stake_and_bounty_without_http(monkeypatch):
+def test_accept_task_skips_stake_and_books_bounty_locally(monkeypatch):
     acct = Account.create()
     wallet = EthWallet(private_key=acct.key.hex(), address=acct.address)
     conn = TaskMarketConnector({"enabled": True, "min_reward": 0, "limit": 5}, wallet=wallet)
@@ -84,8 +85,8 @@ def test_accept_task_skips_stake_and_bounty_without_http(monkeypatch):
         raw={"source": "taskmarket", "task": {"mode": "bounty", "stakeRequired": False}},
     )
     r = conn.accept_task(bounty)
-    assert r["ok"] is False
-    assert r["error"] == "not_claim_mode"
+    assert r["ok"] is True
+    assert r["mode"] == "direct_submit"
 
     stake = PlatformTask(
         platform="taskmarket",
