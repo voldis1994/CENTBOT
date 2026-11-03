@@ -24,9 +24,19 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-git fetch origin main
-git checkout main
-git pull origin main
+REM Hard sync (untracked SET_ETH_KEY.bat etc. must not block pull)
+if exist "%~dp0SYNC_MAIN.bat" (
+  call "%~dp0SYNC_MAIN.bat"
+) else (
+  if not exist "%USERPROFILE%\CENTBOT_BACKUP" mkdir "%USERPROFILE%\CENTBOT_BACKUP"
+  if exist config\local.yaml copy /Y config\local.yaml "%USERPROFILE%\CENTBOT_BACKUP\local.yaml" >nul
+  if exist data\eth.env copy /Y data\eth.env "%USERPROFILE%\CENTBOT_BACKUP\eth.env" >nul
+  git fetch origin main
+  git checkout -f main 2>nul
+  git reset --hard origin/main
+  git clean -fd
+  if not exist config\local.yaml if exist "%USERPROFILE%\CENTBOT_BACKUP\local.yaml" copy /Y "%USERPROFILE%\CENTBOT_BACKUP\local.yaml" config\local.yaml >nul
+)
 
 set "PY="
 if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
