@@ -8,6 +8,7 @@ from typing import Any
 import requests
 
 from centbot.core.logger import get_logger
+from centbot.runtime_paths import ssl_verify_path
 
 log = get_logger("centbot.http")
 
@@ -33,6 +34,8 @@ class HttpClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
+        # Always pin CA bundle (PyInstaller _MEI certifi.where() is often invalid)
+        self.session.verify = ssl_verify_path()
         self.session.headers.update(
             {
                 "User-Agent": user_agent,
@@ -79,6 +82,7 @@ class HttpClient:
                     data=data,
                     headers=hdrs,
                     timeout=self.timeout,
+                    verify=self.session.verify,
                 )
                 if resp.status_code == 429:
                     wait = float(resp.headers.get("Retry-After", 2 ** attempt))

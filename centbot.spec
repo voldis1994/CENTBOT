@@ -16,6 +16,8 @@ a = Analysis(
     binaries=[],
     datas=[
         ('centbot/dashboard/panel.html', 'centbot/dashboard'),
+        ('centbot/certs/cacert.pem', 'centbot/certs'),
+        ('centbot/certs/cacert.pem', 'certs'),
         ('config/default.yaml', 'config'),
         ('config/local.yaml.example', 'config'),
         ('requirements.txt', '.'),
