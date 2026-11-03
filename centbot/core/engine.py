@@ -356,8 +356,10 @@ class CentBotEngine:
         conn = self.platforms.get("basedagents")
         if not conn or not getattr(conn, "enabled", False):
             return {"ok": False, "skipped": True, "reason": "platform_disabled"}
-        if getattr(conn, "identity", None):
-            return {"ok": True, "skipped": True, "reason": "already_loaded"}
+        ident = getattr(conn, "identity", None)
+        # Keypair without agent_id still needs /register/complete
+        if ident is not None and getattr(ident, "agent_id", None):
+            return {"ok": True, "skipped": True, "reason": "already_loaded", "agent_id": ident.agent_id}
         if not bool(self.config.get("platforms.basedagents.auto_register", True)):
             return {"ok": False, "skipped": True, "reason": "auto_register_disabled"}
         try:
@@ -376,8 +378,10 @@ class CentBotEngine:
                 self.journal.record("basedagents_register", "error", result=result)
             return result
         except Exception as exc:  # noqa: BLE001
-            self.journal.record("basedagents_register", "error", error=str(exc))
-            return {"ok": False, "error": str(exc)}
+            # Surface API body when register/complete fails (was opaque 400 before)
+            body = getattr(exc, "body", None)
+            self.journal.record("basedagents_register", "error", error=str(exc), body=body)
+            return {"ok": False, "error": str(exc), "body": body}
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
         """Persist safe settings to config/local.yaml from the control panel."""
