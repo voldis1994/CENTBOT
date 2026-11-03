@@ -114,35 +114,39 @@ class CentBotEngine:
             emulator_path=str(config.get("android.emulator_path") or _sdk_early.get("emulator") or "emulator"),
         )
         self.repair = ErrorRepair(max_attempts=2)
-        from centbot.sandbox.isolated import sandbox_diagnose
+        # Sandbox must NEVER block engine start. Docker OK → container; else restrictor.
+        try:
+            from centbot.sandbox.isolated import sandbox_diagnose
 
-        sand = sandbox_diagnose()
+            sand = sandbox_diagnose()
+        except Exception as sand_exc:  # noqa: BLE001
+            sand = {"ok": False, "error": str(sand_exc), "hint_lv": "sandbox_diagnose_failed"}
         if sand.get("ok"):
             self.journal.record("sandbox", "ok", available=True, backend=sand.get("selected"))
-            os.environ.setdefault("CENTBOT_REQUIRE_CONTAINER", "1")
+            os.environ["CENTBOT_REQUIRE_CONTAINER"] = "1"
         else:
-            # Docker may be installed but daemon/image not ready — say so honestly
-            msg = str(sand.get("hint_lv") or sand.get("error") or "sandbox unavailable")
-            level = "warning"
+            # Critical: force soft fallback so TaskMarket/BasedAgents keep running
+            os.environ["CENTBOT_REQUIRE_CONTAINER"] = "0"
+            msg = (
+                "sandbox: Docker nav gatavs — PC lane lieto restrictor (LIVE turpinās). "
+                "Kad Docker Engine Running: ENSURE_DOCKER.bat"
+            )
             if sand.get("docker_on_path"):
-                level = "warning"
-                msg = f"sandbox: Docker ir, bet nav gatavs — {msg}"
-            else:
                 msg = (
-                    "sandbox: Docker/Podman nav PATH — PC lane lieto restrictor. "
-                    "Ja Docker Desktop ir instalēts: palaid Engine, jaunu CMD, tad "
-                    "python -m centbot.windows.docker_sandbox"
+                    "sandbox: Docker ir PATH, bet image/Engine nav OK — lietoju restrictor. "
+                    "ENSURE_DOCKER.bat (pull python:3.12-slim), tad STOP+START"
                 )
             existing = self.db.fetchone(
-                "SELECT id FROM alerts WHERE acknowledged=0 AND source=? AND message=? LIMIT 1",
-                ("sandbox", msg),
+                "SELECT id FROM alerts WHERE acknowledged=0 AND source=? LIMIT 1",
+                ("sandbox",),
             )
             if not existing:
-                self.db.add_alert(level, msg, source="sandbox")
+                self.db.add_alert("info", msg, source="sandbox")
             self.journal.record(
                 "sandbox",
                 "warn",
                 available=False,
+                fallback="restrictor",
                 docker_on_path=sand.get("docker_on_path"),
                 error=sand.get("error"),
             )
@@ -792,8 +796,8 @@ class CentBotEngine:
                         alert_msg = f"Accept failed {row.get('platform')}:{row.get('external_id')} — {err}"
                         if str(err) == "wallet_required":
                             alert_msg = (
-                                f"{row.get('platform')}: wallet_required — "
-                                "palaid SET_ETH_KEY.bat (publiskā adrese claimam nepietiek), tad STOP+START"
+                                f"{row.get('platform')}: nav ETH signing key — "
+                                "SET_ETH_KEY.bat (TaskMarket). BasedAgents strada bez ta."
                             )
                             self._accept_blocked_platforms = {
                                 **blocked,
@@ -820,7 +824,8 @@ class CentBotEngine:
                             (alert_msg,),
                         )
                         if not existing:
-                            self.db.add_alert("warning", alert_msg, source="accept")
+                            lvl = "info" if str(err) in {"wallet_required", "basedagents_identity_missing"} else "warning"
+                            self.db.add_alert(lvl, alert_msg, source="accept")
                         # Permanent platform-policy failures: stop retrying every cycle
                         permanent = {
                             "index_only",

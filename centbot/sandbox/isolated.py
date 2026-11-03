@@ -197,11 +197,29 @@ def sandbox_diagnose() -> dict[str, Any]:
         out["error"] = "no_container_backend"
         out["hint_lv"] = "Docker/Podman nav PATH. Palaid Docker Desktop un jaunu CMD."
         return out
+    # Fast path: docker CLI present but daemon/image not ready — skip slow failing pulls
+    if backends.get("docker") or backends.get("podman"):
+        try:
+            from centbot.windows.docker_sandbox import docker_info, image_present
+
+            info = docker_info()
+            if not info.get("ok"):
+                out["error"] = info.get("error") or "daemon_not_running"
+                out["hint_lv"] = info.get("hint_lv") or "Docker Engine nav Running."
+                return out
+            if not image_present():
+                out["error"] = "sandbox_image_missing"
+                out["hint_lv"] = "Trūkst python:3.12-slim — palaid ENSURE_DOCKER.bat (viens pull)."
+                return out
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = f"docker_precheck:{exc}"
+            out["hint_lv"] = "Docker precheck failed — lietoju restrictor."
+            return out
     # Prefer requiring container for the probe even if START set REQUIRE=0
     old = os.environ.get("CENTBOT_REQUIRE_CONTAINER")
     os.environ["CENTBOT_REQUIRE_CONTAINER"] = "1"
     try:
-        result = run_python_isolated(code="print('centbot-sandbox-ok')", timeout=60, require_container=True)
+        result = run_python_isolated(code="print('centbot-sandbox-ok')", timeout=45, require_container=True)
     finally:
         if old is None:
             os.environ.pop("CENTBOT_REQUIRE_CONTAINER", None)

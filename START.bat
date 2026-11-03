@@ -50,7 +50,8 @@ if not exist certs\cacert.pem (
 set "CENTBOT_ROOT=%CD%"
 set "CENTBOT_USE_EXE=0"
 
-REM Prefer Docker sandbox when Docker Desktop Engine is running
+REM Docker sandbox ONLY if ENSURE_DOCKER.bat already proved it (data\docker.env).
+REM Never force REQUIRE=1 from a bare "docker info" — missing image causes errors everywhere.
 if exist "%CD%\data\docker.env" (
   for /f "usebackq tokens=1* delims==" %%A in ("%CD%\data\docker.env") do (
     if /I "%%A"=="CENTBOT_REQUIRE_CONTAINER" set "CENTBOT_REQUIRE_CONTAINER=%%B"
@@ -58,23 +59,17 @@ if exist "%CD%\data\docker.env" (
     if /I "%%A"=="CENTBOT_SANDBOX_IMAGE" set "CENTBOT_SANDBOX_IMAGE=%%B"
   )
 )
-if not defined CENTBOT_REQUIRE_CONTAINER (
-  where docker >nul 2>&1
-  if not errorlevel 1 (
-    docker info >nul 2>&1
-    if not errorlevel 1 (
-      set "CENTBOT_REQUIRE_CONTAINER=1"
-      set "CENTBOT_SANDBOX_BACKEND=docker"
-      echo [CENTBOT] Docker Engine detected — sandbox=container
-    ) else (
-      set "CENTBOT_REQUIRE_CONTAINER=0"
-      echo [CENTBOT] docker on PATH but Engine not running — restrictor fallback
-      echo           Start Docker Desktop, then ENSURE_DOCKER.bat
-    )
-  ) else (
+if not defined CENTBOT_REQUIRE_CONTAINER set "CENTBOT_REQUIRE_CONTAINER=0"
+if "%CENTBOT_REQUIRE_CONTAINER%"=="1" (
+  docker info >nul 2>&1
+  if errorlevel 1 (
+    echo [CENTBOT] docker.env says container, but Engine down — falling back to restrictor
     set "CENTBOT_REQUIRE_CONTAINER=0"
-    echo [CENTBOT] No docker on PATH — restrictor fallback ^(PC lane still works^)
+  ) else (
+    echo [CENTBOT] Docker sandbox enabled ^(ENSURE_DOCKER OK^)
   )
+) else (
+  echo [CENTBOT] Sandbox=restrictor ^(LIVE OK^). Optional: ENSURE_DOCKER.bat for containers.
 )
 set "SSL_CERT_FILE=%CD%\certs\cacert.pem"
 set "REQUESTS_CA_BUNDLE=%CD%\certs\cacert.pem"
@@ -87,8 +82,8 @@ if exist "%CD%\data\eth.env" (
   )
 )
 if not defined CENTBOT_ETH_PRIVATE_KEY (
-  echo [CENTBOT] WARNING: no CENTBOT_ETH_PRIVATE_KEY — TaskMarket claims will fail wallet_required.
-  echo [CENTBOT] Run SET_ETH_KEY.bat once, then START.bat again.
+  echo [CENTBOT] INFO: nav ETH signing key — TaskMarket skip; BasedAgents var stradat.
+  echo           Velak: SET_ETH_KEY.bat
 )
 
 REM Load Android SDK paths (created by INSTALL_ANDROID.bat)
