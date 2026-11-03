@@ -42,9 +42,19 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-git fetch origin main
-git checkout main
-git pull origin main
+REM Hard sync — avoids "untracked files would be overwritten by merge"
+if exist "%~dp0SYNC_MAIN.bat" (
+  call "%~dp0SYNC_MAIN.bat"
+) else (
+  if not exist "%USERPROFILE%\CENTBOT_BACKUP" mkdir "%USERPROFILE%\CENTBOT_BACKUP"
+  if exist config\local.yaml copy /Y config\local.yaml "%USERPROFILE%\CENTBOT_BACKUP\local.yaml" >nul
+  if exist data\eth.env copy /Y data\eth.env "%USERPROFILE%\CENTBOT_BACKUP\eth.env" >nul
+  git fetch origin main
+  git checkout -f main 2>nul
+  git reset --hard origin/main
+  git clean -fd
+  if not exist config\local.yaml if exist "%USERPROFILE%\CENTBOT_BACKUP\local.yaml" copy /Y "%USERPROFILE%\CENTBOT_BACKUP\local.yaml" config\local.yaml >nul
+)
 
 echo [CENTBOT] === 4/5 Seed TLS cert + ensure venv deps ===
 if not exist certs mkdir certs
