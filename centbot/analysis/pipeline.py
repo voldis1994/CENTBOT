@@ -175,5 +175,8 @@ class AutoAcceptor:
             return {"ok": True, "mode": "dry_run", "task_id": row["id"]}
         assert task is not None
         result = conn.accept_task(task)
-        self.journal.record("accept", "ok" if result.get("ok") else "error", task_id=row["id"], result=result)
+        # Journal successes here; live failures are recorded once by the engine
+        # (with platform/external_id/alerts) to avoid duplicate accept-error spam.
+        if result.get("ok"):
+            self.journal.record("accept", "ok", task_id=row["id"], platform=platform, result=result)
         return result

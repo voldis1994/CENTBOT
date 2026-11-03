@@ -23,6 +23,38 @@ def _atomic_to_float(value: Any) -> float:
         return 0.0
 
 
+def _sig_hex(sig: str) -> str:
+    return sig if sig.startswith("0x") else "0x" + sig
+
+
+def _hire_blocks_worker(task: dict[str, Any], worker_address: str | None) -> bool:
+    """True when a hire reservation exists for a different wallet."""
+    hire = task.get("hire")
+    if not isinstance(hire, dict) or not hire:
+        return False
+    reserved = str(hire.get("worker") or "").strip()
+    if not reserved:
+        return False
+    if not worker_address:
+        return True
+    return reserved.lower() != worker_address.lower()
+
+
+def _is_auto_claimable(task: dict[str, Any], worker_address: str | None) -> bool:
+    """Only free claim-mode tasks without foreign hire / stake can be auto-claimed."""
+    if str(task.get("status") or "") != "open":
+        return False
+    if task.get("claimedBy"):
+        return False
+    if str(task.get("mode") or "").lower() != "claim":
+        return False
+    if bool(task.get("stakeRequired")):
+        return False
+    if _hire_blocks_worker(task, worker_address):
+        return False
+    return True
+
+
 class TaskMarketConnector(PlatformConnector):
     name = "taskmarket"
 
@@ -41,15 +73,15 @@ class TaskMarketConnector(PlatformConnector):
             self.wallet = wallet_from_store(credential_getter("eth_wallet"))
         self.min_reward = float(config.get("min_reward", 0) or 0)
         self.limit = int(config.get("limit", 50))
-        self.mode = config.get("mode")  # bounty|claim|...
+        # Prefer claim-mode feed for auto-accept; bounty/pitch need different flows.
+        self.mode = config.get("mode", "claim")
+        self.allow_stake_claims = bool(config.get("allow_stake_claims", False))
 
     def _caller_headers(self) -> dict[str, str]:
         if not self.wallet:
             return {}
         msg = taskmarket_read_message(self.wallet.address)
-        sig = self.wallet.sign_message(msg)
-        if not sig.startswith("0x"):
-            sig = "0x" + sig
+        sig = _sig_hex(self.wallet.sign_message(msg))
         return {
             "X-Taskmarket-Caller-Address": self.wallet.address,
             "X-Taskmarket-Caller-Signature": sig,
@@ -63,6 +95,7 @@ class TaskMarketConnector(PlatformConnector):
             params["mode"] = self.mode
         data = self.client.get_json("/api/tasks", params=params, headers=self._caller_headers() or None)
         tasks = (data or {}).get("tasks") or []
+        worker = self.wallet.address if self.wallet else None
         out: list[PlatformTask] = []
         for t in tasks:
             amount = _atomic_to_float(t.get("netReward") or t.get("reward"))
@@ -71,6 +104,10 @@ class TaskMarketConnector(PlatformConnector):
             tags = t.get("tags") or []
             escrow = t.get("escrowTxHash")
             funded = bool(escrow) or amount > 0
+            claimable = _is_auto_claimable(t, worker)
+            if bool(t.get("stakeRequired")) and self.allow_stake_claims and str(t.get("mode") or "").lower() == "claim":
+                # Stake claims need x402 payment — still not auto-claimable until paid.
+                claimable = False
             out.append(
                 PlatformTask(
                     platform=self.name,
@@ -85,7 +122,7 @@ class TaskMarketConnector(PlatformConnector):
                     payer_rating=0.8 if t.get("requesterAgentId") else 0.7,
                     funded=funded,
                     available=str(t.get("status")) == "open",
-                    claimable=str(t.get("status")) == "open" and not t.get("claimedBy"),
+                    claimable=claimable,
                     automation_allowed=True,
                     payment_state="escrowed" if escrow else "promised",
                     raw={"source": "taskmarket", "task": t},
@@ -128,28 +165,72 @@ class TaskMarketConnector(PlatformConnector):
 
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
         if not self.wallet:
-            return {"ok": False, "error": "wallet_required", "hint": "Set CENTBOT_ETH_PRIVATE_KEY or credentials eth_wallet"}
+            return {
+                "ok": False,
+                "error": "wallet_required",
+                "hint": "Set CENTBOT_ETH_PRIVATE_KEY or credentials eth_wallet",
+                "user_action": "SET_ETH_KEY.bat",
+            }
+        raw_task = (task.raw or {}).get("task") if isinstance(task.raw, dict) else None
+        if not isinstance(raw_task, dict):
+            raw_task = {}
+
+        mode = str(raw_task.get("mode") or "").lower()
+        if mode and mode != "claim":
+            return {
+                "ok": False,
+                "error": "not_claim_mode",
+                "reason": "not_claim_mode",
+                "status": 400,
+                "hint": "TaskMarket /claim pieņem tikai mode=claim; bounty/pitch nav auto-claim.",
+                "external_id": task.external_id,
+            }
+        if bool(raw_task.get("stakeRequired")) and not self.allow_stake_claims:
+            return {
+                "ok": False,
+                "error": "stake_payment_required",
+                "reason": "stake_payment_required",
+                "status": 402,
+                "hint": "Šim claim vajag x402 stake maksājumu (Base USDC) — CENTBOT to vēl neapmaksā automātiski.",
+                "external_id": task.external_id,
+            }
+        if _hire_blocks_worker(raw_task, self.wallet.address):
+            hire = raw_task.get("hire") if isinstance(raw_task.get("hire"), dict) else {}
+            return {
+                "ok": False,
+                "error": "hire_reserved",
+                "reason": "hire_reserved",
+                "status": 403,
+                "hint": f"Hire rezervēts citam worker: {hire.get('worker')}",
+                "external_id": task.external_id,
+            }
+
         msg = taskmarket_claim_message(task.external_id)
-        sig = self.wallet.sign_message(msg)
-        if not sig.startswith("0x"):
-            sig = "0x" + sig
-        body = {"workerAddress": self.wallet.address, "signature": sig}
+        sig = _sig_hex(self.wallet.sign_message(msg))
+        # OpenAPI requires workerAddress+signature; taskId in body is accepted and documented elsewhere.
+        body = {
+            "taskId": task.external_id,
+            "workerAddress": self.wallet.address,
+            "signature": sig,
+        }
         try:
-            result = self.client.post_json(f"/api/tasks/{task.external_id}/claim", body, headers=self._caller_headers())
+            result = self.client.post_json(
+                f"/api/tasks/{task.external_id}/claim",
+                body,
+                headers=self._caller_headers(),
+            )
             from centbot.platforms.response import interpret_platform_result
 
             interpreted = interpret_platform_result(result, action="claim")
-            return {**interpreted, "external_id": task.external_id}
+            return {**interpreted, "external_id": task.external_id, "signed_message": msg}
         except PlatformHTTPError as exc:
-            return {"ok": False, "error": str(exc), "status": exc.status, "body": exc.body}
+            return _claim_http_error(exc, task.external_id)
 
     def submit_result(self, task: PlatformTask, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.wallet:
             return {"ok": False, "error": "wallet_required"}
         msg = taskmarket_submit_message(task.external_id)
-        sig = self.wallet.sign_message(msg)
-        if not sig.startswith("0x"):
-            sig = "0x" + sig
+        sig = _sig_hex(self.wallet.sign_message(msg))
         content = payload.get("content")
         if content is None:
             content = payload.get("output")
@@ -160,6 +241,7 @@ class TaskMarketConnector(PlatformConnector):
 
             content = json.dumps(content, ensure_ascii=False)
         body = {
+            "taskId": task.external_id,
             "workerAddress": self.wallet.address,
             "signature": sig,
             "content": content,
@@ -217,6 +299,64 @@ class TaskMarketConnector(PlatformConnector):
                 "live": False,
                 "error": str(exc),
             }
+
+
+def _claim_http_error(exc: PlatformHTTPError, external_id: str) -> dict[str, Any]:
+    body = exc.body
+    msg = ""
+    code = ""
+    if isinstance(body, dict):
+        msg = str(body.get("error") or body.get("message") or "")
+        code = str(body.get("code") or "")
+    lower = msg.lower()
+    if exc.status == 402 or "payment required" in lower or "claim stake" in lower:
+        return {
+            "ok": False,
+            "error": "stake_payment_required",
+            "reason": "stake_payment_required",
+            "status": 402,
+            "body": body,
+            "hint": "TaskMarket pieprasa x402 claim stake (Base USDC) — izlaid, līdz stake ir apmaksāts.",
+            "external_id": external_id,
+        }
+    if exc.status == 401 or "signature does not match" in lower:
+        return {
+            "ok": False,
+            "error": "signature_mismatch",
+            "reason": "signature_mismatch",
+            "status": 401,
+            "body": body,
+            "hint": "Paraksts nesakrīt ar workerAddress — pārbaudi ETH private key un claim message formātu.",
+            "external_id": external_id,
+        }
+    if "not a claim task" in lower:
+        return {
+            "ok": False,
+            "error": "not_claim_mode",
+            "reason": "not_claim_mode",
+            "status": exc.status or 400,
+            "body": body,
+            "hint": "Nav Claim task — bounty/pitch nevar claimot ar /claim.",
+            "external_id": external_id,
+        }
+    if "hire offered to another" in lower or (exc.status == 403 and "hire" in lower):
+        return {
+            "ok": False,
+            "error": "hire_reserved",
+            "reason": "hire_reserved",
+            "status": 403,
+            "body": body,
+            "hint": "Hire rezervēts citam worker.",
+            "external_id": external_id,
+        }
+    return {
+        "ok": False,
+        "error": msg or str(exc),
+        "status": exc.status,
+        "body": body,
+        "code": code or None,
+        "external_id": external_id,
+    }
 
 
 def _title_from_description(desc: Any) -> str:

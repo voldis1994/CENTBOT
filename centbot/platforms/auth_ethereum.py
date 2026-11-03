@@ -50,12 +50,15 @@ def wallet_from_store(data: dict[str, Any] | str | None) -> EthWallet | None:
 
 
 def taskmarket_claim_message(task_id: str) -> str:
-    return f"taskmarket:market:claim: {task_id}"
+    # Live API + docs use no space after the final colon.
+    # Spaced form always 401s: "Signature does not match worker address".
+    return f"taskmarket:market:claim:{task_id}"
 
 
 def taskmarket_submit_message(task_id: str) -> str:
-    return f"taskmarket:market:submit: {task_id}"
+    return f"taskmarket:market:submit:{task_id}"
 
 
 def taskmarket_read_message(address: str) -> str:
+    # Caller-header read auth keeps a space (docs: taskmarket:read: <address>).
     return f"taskmarket:read: {address}"

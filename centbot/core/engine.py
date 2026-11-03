@@ -818,13 +818,37 @@ class CentBotEngine:
                                     self._ensure_basedagents_identity()
                                 except Exception as reg_exc:  # noqa: BLE001
                                     self.journal.record("basedagents_register", "error", error=str(reg_exc))
+                        if str(err) == "stake_payment_required":
+                            alert_msg = (
+                                "TaskMarket: claim stake (x402/Base USDC) — šis darbs izlaists; "
+                                "auto-claim tikai bez stake."
+                            )
+                        if str(err) == "not_claim_mode":
+                            alert_msg = (
+                                "TaskMarket: nav Claim režīms (bounty/pitch) — /claim neder; izlaists."
+                            )
+                        if str(err) == "hire_reserved":
+                            alert_msg = (
+                                "TaskMarket: hire rezervēts citam worker — izlaists."
+                            )
+                        if str(err) == "signature_mismatch":
+                            alert_msg = (
+                                "TaskMarket: paraksts nesakrīt ar maka adresi — pārbaudi SET_ETH_KEY.bat."
+                            )
                         # Deduplicate identical open alerts
                         existing = self.db.fetchone(
                             "SELECT id FROM alerts WHERE acknowledged=0 AND message=? LIMIT 1",
                             (alert_msg,),
                         )
                         if not existing:
-                            lvl = "info" if str(err) in {"wallet_required", "basedagents_identity_missing"} else "warning"
+                            soft = {
+                                "wallet_required",
+                                "basedagents_identity_missing",
+                                "stake_payment_required",
+                                "not_claim_mode",
+                                "hire_reserved",
+                            }
+                            lvl = "info" if str(err) in soft else "warning"
                             self.db.add_alert(lvl, alert_msg, source="accept")
                         # Permanent platform-policy failures: stop retrying every cycle
                         permanent = {
@@ -833,6 +857,9 @@ class CentBotEngine:
                             "human_authorization_required",
                             "not_directly_claimable",
                             "register_api_unsupported",
+                            "stake_payment_required",
+                            "not_claim_mode",
+                            "hire_reserved",
                         }
                         if str(err) in permanent or str(accept.get("reason") or "") in permanent:
                             self.db.execute(
