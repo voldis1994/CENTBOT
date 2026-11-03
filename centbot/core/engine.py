@@ -99,7 +99,7 @@ class CentBotEngine:
         )
         self.executor = TaskExecutorRouter(
             browser_enabled=bool(config.get("browser.enabled", True)),
-            android_enabled=bool(config.get("android.enabled", False)),
+            android_enabled=bool(config.get("android.enabled", True)),
             headless=bool(config.get("browser.headless", True)),
             timeout_ms=int(config.get("browser.timeout_ms", 30000)),
             user_agent=str(config.get("browser.user_agent") or None),
@@ -144,7 +144,7 @@ class CentBotEngine:
         ]
         if not isinstance(avds, list):
             avds = ["CENTBOT_ANDROID_01", "CENTBOT_ANDROID_02", "CENTBOT_ANDROID_03", "CENTBOT_ANDROID_04"]
-        android_enabled = bool(config.get("android.enabled", False))
+        android_enabled = bool(config.get("android.enabled", True))
         android_slots = int(config.get("android.max_emulators", 4) or 4) if android_enabled else 0
         self.emulator = EmulatorManager(
             emulator_path=str(config.get("android.emulator_path", "emulator")),
@@ -451,7 +451,7 @@ class CentBotEngine:
                 "min_expected_profit": self.config.get("analysis.min_expected_profit"),
                 "bank_iban_set": bool(str(self.config.get("finance.bank_iban") or "").strip()),
                 "crypto_wallet_set": bool(str(self.config.get("finance.crypto_wallet_public") or "").strip()),
-                "android_enabled": bool(self.config.get("android.enabled", False)),
+                "android_enabled": bool(self.config.get("android.enabled", True)),
                 "android_max": int(self.config.get("android.max_emulators", 4) or 4),
                 "max_parallel_tasks": int(self.config.get("system.max_parallel_tasks", 6) or 6),
                 "operator_email": (self.config.section("operator") or {}).get("email") or "",
@@ -817,7 +817,7 @@ class CentBotEngine:
 
     def _sync_android_workers(self) -> None:
         """Bind ADB serials to distributor when android.enabled; else zero Android capacity."""
-        if not bool(self.config.get("android.enabled", False)):
+        if not bool(self.config.get("android.enabled", True)):
             for i in range(1, 5):
                 wid = f"android_{i}"
                 if wid in self.distributor.workers:

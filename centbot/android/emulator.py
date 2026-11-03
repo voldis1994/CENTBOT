@@ -43,11 +43,17 @@ class EmulatorManager:
         self._procs: dict[str, subprocess.Popen] = {}
 
     def status(self) -> dict[str, Any]:
-        running = devices(self.adb_path) if self.enabled or emulator_available(self.emulator_path) else []
+        installed = emulator_available(self.emulator_path)
+        running = devices(self.adb_path) if self.enabled or installed else []
+        n_running = len(running)
         return {
             "enabled": self.enabled,
-            "ok": self.enabled,
-            "emulator_installed": emulator_available(self.emulator_path),
+            "ok": bool(self.enabled),
+            # Panel-friendly aliases (UI used to look for these and always showed OFF)
+            "available": bool(self.enabled and installed),
+            "active": n_running,
+            "running": n_running,
+            "emulator_installed": installed,
             "running_devices": running,
             "managed_procs": len(self._procs),
             "managed_avds": list(self._procs.keys()),
@@ -63,6 +69,15 @@ class EmulatorManager:
                 }
                 for i, name in enumerate(self.avds)
             ],
+            "label": (
+                "OFF"
+                if not self.enabled
+                else (
+                    f"OK · {n_running}"
+                    if n_running
+                    else ("ON · nav AVD" if installed else "ON · nav SDK")
+                )
+            ),
             "setup_hint": "Run SETUP.bat to create CENTBOT_ANDROID_01..04; set android.enabled: true in local.yaml.",
         }
 

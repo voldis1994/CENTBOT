@@ -201,10 +201,14 @@ def test_bat_files_exist():
     assert ".venv" in setup
     start = (root / "START.bat").read_text(encoding="utf-8", errors="ignore")
     assert "SETUP.bat" in start
-    assert "setup_incomplete" in start
     assert ".venv\\Scripts\\python.exe" in start or ".venv/Scripts/python.exe" in start
+    assert "certs\\cacert.pem" in start or "certs/cacert.pem" in start
+    assert "centbot.windows.start" in start
     stop = (root / "STOP.bat").read_text(encoding="utf-8", errors="ignore")
     assert "centbot.windows.stop" in stop
+    assert (root / "CLONE_WINDOWS.bat").exists()
+    clone = (root / "CLONE_WINDOWS.bat").read_text(encoding="utf-8", errors="ignore")
+    assert "git clone" in clone and "config\\local.yaml" in clone
 
 
 def test_stop_emulators_only_targets_centbot_avds(monkeypatch):
@@ -301,5 +305,6 @@ def test_exe_packaging_files_exist():
     build = (root / "BUILD_EXE.bat").read_text(encoding="utf-8", errors="ignore")
     assert "PyInstaller" in build
     start = (root / "START.bat").read_text(encoding="utf-8", errors="ignore")
-    assert "CENTBOT.exe" in start
-    assert "address already in use" in start
+    assert "centbot.windows.start" in start
+    assert "certs\\cacert.pem" in start or "certs/cacert.pem" in start
+    assert "CENTBOT_USE_EXE" in start

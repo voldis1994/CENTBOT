@@ -920,9 +920,15 @@
       document.getElementById("sysBrowser").textContent = s.browser?.enabled ? (s.browser.headless ? "Headless" : "UI") : "OFF";
       const andEl = document.getElementById("sysAndroid");
       const finEl = document.getElementById("sysFinance");
-      const androidOn = !(s.android?.enabled === false) && s.android?.ok !== false && (s.android?.running || s.android?.active || s.android?.available);
-      andEl.textContent = androidOn ? "OK" : "OFF";
-      andEl.className = androidOn ? "pill-ok" : "pill-warn";
+      const androidEnabled = s.settings?.android_enabled !== false && s.android?.enabled !== false;
+      const androidLabel = s.android?.label
+        || (!androidEnabled ? "OFF"
+          : ((s.android?.running || s.android?.active || (s.android?.running_devices || []).length)
+              ? ("OK · " + (s.android.running || s.android.active || (s.android.running_devices || []).length))
+              : (s.android?.emulator_installed ? "ON · nav AVD" : "ON · nav SDK")));
+      andEl.textContent = androidLabel;
+      andEl.className = (!androidEnabled) ? "pill-warn" : ((s.android?.running || s.android?.active) ? "pill-ok" : "pill-warn");
+      andEl.title = s.android?.setup_hint || "";
       const finOk = !!(s.finance?.wallet_public_set || s.finance?.bank_iban_set);
       finEl.textContent = finOk ? "OK" : "Nav";
       finEl.className = finOk ? "pill-ok" : "pill-bad";
