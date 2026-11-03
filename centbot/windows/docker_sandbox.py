@@ -182,15 +182,21 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Ensure Docker sandbox for CENTBOT")
     p.add_argument("--status", action="store_true")
     p.add_argument("--no-pull", action="store_true")
+    p.add_argument("--soft", action="store_true", help="Exit 0 even if Docker not ready (FIX_LIVE)")
     args = p.parse_args(argv)
     if args.status:
         print(json.dumps({"info": docker_info(), "image": image_present()}, indent=2))
         return 0 if docker_info().get("ok") else 1
     report = ensure_docker_sandbox(pull=not args.no_pull)
+    # Always persist env so START.bat knows whether to require containers
+    if not report.get("ok"):
+        report["require_container"] = "0"
     env_path = write_docker_env(report)
     report["env_file"] = str(env_path) if env_path else None
     print(json.dumps(report, indent=2, default=str))
-    return 0 if report.get("ok") else 1
+    if report.get("ok"):
+        return 0
+    return 0 if args.soft else 1
 
 
 if __name__ == "__main__":
