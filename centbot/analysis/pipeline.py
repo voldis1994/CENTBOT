@@ -138,9 +138,14 @@ class AnalysisPipeline:
             return {"status": "rejected", "reason": "automation_not_allowed"}
         if not row.get("available"):
             return {"status": "rejected", "reason": "unavailable"}
-        # Platforms like Jobbi (index) / Agentizable (human wallet auth) must not flood accept errors
+        # Index-only / stake / hire / non-claimable: soft-skip (not Noraidīts).
+        # Jobbi/Agentizable and TaskMarket stake tasks stay visible as Izlaists.
         if "claimable" in row and not bool(row.get("claimable")):
-            return {"status": "rejected", "reason": "not_directly_claimable"}
+            reason = "not_directly_claimable"
+            raw = row.get("raw_json") or row.get("raw") or {}
+            if isinstance(raw, dict):
+                reason = str(raw.get("skip_reason") or reason)
+            return {"status": "skipped", "reason": reason}
         if self.config.get("reject_unfunded", True) and not row.get("funded"):
             return {"status": "rejected", "reason": "unfunded"}
         if float(row.get("payer_trust") or 0) < min_trust:

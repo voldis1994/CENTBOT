@@ -426,14 +426,27 @@ class CentBotEngine:
         )
         recent = self.db.fetchall(
             "SELECT id, title, platform, status, reward_amount, reward_currency, expected_profit, "
-            "priority, updated_at FROM tasks ORDER BY updated_at DESC LIMIT 40"
+            "priority, updated_at, raw_json FROM tasks ORDER BY updated_at DESC LIMIT 40"
         )
         active = self.db.fetchall(
             "SELECT id, title, platform, status, reward_amount, reward_currency, expected_profit, "
-            "priority, updated_at FROM tasks WHERE status IN "
-            "('eligible','accepted','running','submitted','verified','needs_repair','dry_run_accepted','dry_run_completed') "
+            "priority, updated_at, raw_json FROM tasks WHERE status IN "
+            "('eligible','accepted','running','submitted','verified','needs_repair',"
+            "'dry_run_accepted','dry_run_completed','skipped') "
             "ORDER BY priority DESC, updated_at DESC LIMIT 40"
         )
+        for bucket in (recent, active):
+            for r in bucket:
+                reason = None
+                raw_s = r.pop("raw_json", None)
+                try:
+                    raw_o = json.loads(raw_s) if isinstance(raw_s, str) else raw_s
+                    if isinstance(raw_o, dict):
+                        reason = raw_o.get("reject_reason") or raw_o.get("skip_reason")
+                except (TypeError, json.JSONDecodeError):
+                    reason = None
+                if reason:
+                    r["reject_reason"] = reason
         balances = self.ledger.balances()
         income = self.ledger.income_history(15)
         # Fresh monitor sample when idle (run_forever keeps _last_snapshot hot)
@@ -482,6 +495,7 @@ class CentBotEngine:
                 "running": counts.get("running", 0),
                 "completed": counts.get("completed", 0),
                 "rejected": counts.get("rejected", 0),
+                "skipped": counts.get("skipped", 0),
                 "awaiting_payment": awaiting_pay,
                 "in_progress": in_progress,
                 "done": completed,
@@ -548,6 +562,65 @@ class CentBotEngine:
             "consistency": self._consistency_report(),
         }
 
+    def _reclassify_soft_rejects(self) -> int:
+        """Turn hard Noraidīts (claimable=false) into skipped/eligible under current rules."""
+        from centbot.platforms.hydrate import task_from_row
+        from centbot.platforms.taskmarket import _is_auto_claimable
+
+        rows = self.db.fetchall("SELECT * FROM tasks WHERE status=?", ("rejected",))
+        if not rows:
+            return 0
+        tm = self.platforms.get("taskmarket")
+        worker = None
+        if tm is not None and getattr(tm, "wallet", None) is not None:
+            worker = tm.wallet.address
+        changed = 0
+        for row in rows:
+            raw: dict[str, Any] = {}
+            try:
+                parsed = json.loads(row["raw_json"]) if isinstance(row.get("raw_json"), str) else row.get("raw_json")
+                if isinstance(parsed, dict):
+                    raw = parsed
+            except (TypeError, json.JSONDecodeError):
+                raw = {}
+            reason = str(raw.get("reject_reason") or "")
+            soft_reasons = {
+                "not_directly_claimable",
+                "stake_payment_required",
+                "hire_reserved",
+                "not_claim_mode",
+                "already_claimed",
+            }
+            if reason and reason not in soft_reasons and row.get("platform") != "taskmarket":
+                continue
+            claimable = True
+            if row.get("platform") == "taskmarket":
+                blob = raw.get("task") if isinstance(raw.get("task"), dict) else {}
+                claimable = _is_auto_claimable(blob, worker) if blob else False
+            elif reason == "not_directly_claimable":
+                claimable = False
+            task_obj = task_from_row(row)
+            item = self.analysis.analyze(
+                {
+                    **row,
+                    "claimable": 1 if claimable else 0,
+                    "available": row.get("available", 1),
+                    "funded": row.get("funded", 0),
+                    "raw_json": raw,
+                    "_task": task_obj,
+                }
+            )
+            store = {k: v for k, v in item.items() if k not in ("_task", "is_new", "reject_reason", "automation_allowed")}
+            if item.get("reject_reason"):
+                raw = dict(raw)
+                raw["reject_reason"] = item["reject_reason"]
+                store["raw_json"] = raw
+            self.db.upsert_task(store)
+            changed += 1
+        if changed:
+            self.journal.record("reclassify", "ok", reopened=changed)
+        return changed
+
     def discover_and_analyze(self) -> list[dict[str, Any]]:
         if not self.rate_limiter.allow():
             self.journal.record("discover", "rate_limited")
@@ -603,6 +676,8 @@ class CentBotEngine:
             analyzed.append(item)
             if item["status"] == "rejected":
                 self.ledger.update_platform_stats(item["platform"], rejected=1)
+        # Reclassify rows stuck as Noraidīts from older claimable=false hard-rejects
+        self._reclassify_soft_rejects()
         return analyzed
 
     def _work_dir(self, task_id: str) -> Path:
@@ -862,9 +937,20 @@ class CentBotEngine:
                             "hire_reserved",
                         }
                         if str(err) in permanent or str(accept.get("reason") or "") in permanent:
+                            # Soft outcomes — Izlaists, not Noraidīts
                             self.db.execute(
                                 "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
-                                ("rejected", utcnow(), row["id"]),
+                                ("skipped", utcnow(), row["id"]),
+                            )
+                            raw = row.get("raw_json")
+                            try:
+                                raw_obj = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+                            except (TypeError, json.JSONDecodeError):
+                                raw_obj = {}
+                            raw_obj["reject_reason"] = str(err)
+                            self.db.execute(
+                                "UPDATE tasks SET raw_json=? WHERE id=?",
+                                (json.dumps(raw_obj, default=str), row["id"]),
                             )
                         # Skip to next suitable task instead of faking success
                         continue

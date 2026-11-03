@@ -695,6 +695,20 @@
       return v.toFixed(4) + " " + c;
     };
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+    const reasonLv = (r) => ({
+      not_directly_claimable: "nav auto-claim",
+      stake_payment_required: "vajag stake (~1 USDC)",
+      hire_reserved: "hire citam",
+      not_claim_mode: "nav claim režīms",
+      already_claimed: "jau claimots",
+      unfunded: "nav escrow",
+      unprofitable: "zema peļņa",
+      low_reward_probability: "zema ticamība",
+      low_payer_trust: "zema uzticība",
+      unavailable: "nav pieejams",
+      automation_not_allowed: "automātika aizliegta",
+      too_long: "pārāk garš",
+    }[r] || r || "");
     const statusLabel = (st) => ({
       eligible: "Pieejams",
       accepted: "Pieņemts",
@@ -705,6 +719,7 @@
       completed: "Pabeigts",
       failed: "Neizdevās",
       rejected: "Noraidīts",
+      skipped: "Izlaists",
       needs_repair: "Labojams",
       dry_run_accepted: "Dry-run pieņemts",
       dry_run_completed: "Dry-run pabeigts",
@@ -713,7 +728,8 @@
     const progressFor = (st) => ({
       eligible: 10, accepted: 25, dry_run_accepted: 25, running: 55,
       needs_repair: 45, submitted: 80, verified: 90, paid: 100,
-      completed: 100, dry_run_completed: 100, failed: 100, rejected: 100, submit_failed: 70
+      completed: 100, dry_run_completed: 100, failed: 100, rejected: 100,
+      skipped: 15, submit_failed: 70
     }[st] || 20);
     const prioOf = (p) => {
       const n = Number(p || 0);
@@ -748,7 +764,7 @@
           <td>${esc((t.title||"").slice(0,72))}</td>
           <td class="reward">${esc(money(t.reward_amount, cur))}</td>
           <td class="status-cell">
-            <div class="status-label">${esc(statusLabel(t.status))} · ${pct}%</div>
+            <div class="status-label">${esc(statusLabel(t.status))}${t.reject_reason ? " · " + esc(reasonLv(t.reject_reason)) : ""} · ${pct}%</div>
             <div class="progress"><i style="width:${pct}%"></i></div>
           </td>
           <td><span class="prio ${pc}">${pl}</span></td>
