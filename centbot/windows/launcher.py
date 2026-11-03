@@ -169,9 +169,33 @@ def _open_browser(url: str) -> None:
 def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
     if setup_incomplete():
         return {"ok": False, "error": "setup_incomplete", "action": "run_SETUP.bat"}
-    out: dict[str, Any] = {}
-    if not skip_emulators:
-        out["emulators"] = start_emulators()
+    from centbot.core.config import Config
+    from centbot.core.consistency import audit_config
+
+    config = Config()
+    audit = audit_config(config)
+    out: dict[str, Any] = {"consistency": audit}
+    android_on = bool(config.get("android.enabled", False))
+    if not skip_emulators and android_on:
+        count = int(config.get("android.max_emulators", 4) or 4)
+        out["emulators"] = start_emulators(
+            adb=str(config.get("android.adb_path", "adb")),
+            emulator=str(config.get("android.emulator_path", "emulator")),
+            count=count,
+        )
+    elif not android_on:
+        out["emulators"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "android.enabled_is_false",
+            "hint": "Set android.enabled: true in config/local.yaml (wizard does this)",
+        }
+    # Refuse to start intentional live if consistency blockers say not ready
+    if config.is_live() and not audit.get("ready_for_live"):
+        out["ok"] = False
+        out["error"] = "live_not_ready"
+        out["hint"] = "Fix blockers (mode/auto_accept/wallet) or start with system.mode: dry_run"
+        return out
     out["engine"] = start_engine(open_dashboard=True)
     out["ok"] = bool(out["engine"].get("ok"))
     return out

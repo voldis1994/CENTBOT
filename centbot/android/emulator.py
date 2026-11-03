@@ -32,18 +32,21 @@ class EmulatorManager:
         max_emulators: int = 4,
         default_avd: str = "CENTBOT_ANDROID_01",
         avds: list[str] | None = None,
+        enabled: bool = False,
     ):
         self.emulator_path = emulator_path
         self.adb_path = adb_path
-        self.max_emulators = max(1, min(4, int(max_emulators or 4)))
+        self.enabled = bool(enabled)
+        self.max_emulators = max(0, min(4, int(max_emulators or 0)))
         self.default_avd = default_avd
-        self.avds = list(avds or DEFAULT_AVDS)[: self.max_emulators]
+        self.avds = list(avds or DEFAULT_AVDS)[: max(self.max_emulators, 0)]
         self._procs: dict[str, subprocess.Popen] = {}
 
     def status(self) -> dict[str, Any]:
-        running = devices(self.adb_path)
+        running = devices(self.adb_path) if self.enabled or emulator_available(self.emulator_path) else []
         return {
-            "enabled": True,
+            "enabled": self.enabled,
+            "ok": self.enabled,
             "emulator_installed": emulator_available(self.emulator_path),
             "running_devices": running,
             "managed_procs": len(self._procs),
@@ -60,12 +63,16 @@ class EmulatorManager:
                 }
                 for i, name in enumerate(self.avds)
             ],
-            "setup_hint": "Run SETUP.bat to create CENTBOT_ANDROID_01..04 via avdmanager.",
+            "setup_hint": "Run SETUP.bat to create CENTBOT_ANDROID_01..04; set android.enabled: true in local.yaml.",
         }
 
     def start(self, avd: str | None = None) -> dict[str, Any]:
+        if not self.enabled:
+            return {"ok": False, "error": "android_disabled", **self.status()}
         if not emulator_available(self.emulator_path):
             return {"ok": False, "error": "emulator_not_installed", **self.status()}
+        if self.max_emulators <= 0:
+            return {"ok": False, "error": "max_emulators_zero"}
         if len(devices(self.adb_path)) >= self.max_emulators:
             return {"ok": False, "error": "max_emulators_reached"}
         avd_name = avd or self.default_avd

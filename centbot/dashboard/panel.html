@@ -656,10 +656,15 @@
               <input id="setWallet" type="text" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
             </label>
             <label class="worker"><input id="setAutoAccept" type="checkbox"/> Auto-accept (live)</label>
+            <label class="worker"><input id="setAndroidEnabled" type="checkbox"/> Android enabled</label>
             <label class="worker">Android max
               <input id="setAndroidMax" type="number" min="0" max="4" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
             </label>
+            <label class="worker">Max parallel
+              <input id="setMaxParallel" type="number" min="1" max="16" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
+            </label>
           </div>
+          <div id="consistencyBox" class="empty" style="margin-top:.75rem"></div>
           <p style="margin-top:1rem">
             <button class="action-btn" type="button" onclick="saveSettings()">Saglabāt iestatījumus</button>
             <button class="danger" type="button" onclick="emergencyStop()">Emergency stop</button>
@@ -824,13 +829,19 @@
     }
     async function saveSettings() {
       const patch = {
-        system: { mode: document.getElementById("setMode").value },
+        system: {
+          mode: document.getElementById("setMode").value,
+          max_parallel_tasks: Number(document.getElementById("setMaxParallel").value || 6),
+        },
         analysis: {
           auto_accept: document.getElementById("setAutoAccept").checked,
           min_expected_profit: Number(document.getElementById("setMinProfit").value || 0),
         },
         finance: {},
-        android: { max_emulators: Number(document.getElementById("setAndroidMax").value || 4) },
+        android: {
+          enabled: document.getElementById("setAndroidEnabled").checked,
+          max_emulators: Number(document.getElementById("setAndroidMax").value || 4),
+        },
       };
       const iban = document.getElementById("setIban").value.trim();
       const wallet = document.getElementById("setWallet").value.trim();
@@ -959,7 +970,21 @@
         document.getElementById("setIban").value = "";
         document.getElementById("setWallet").value = "";
         document.getElementById("setAutoAccept").checked = !!st.auto_accept;
+        document.getElementById("setAndroidEnabled").checked = !!st.android_enabled;
         document.getElementById("setAndroidMax").value = st.android_max ?? 4;
+        document.getElementById("setMaxParallel").value = st.max_parallel_tasks ?? 6;
+      }
+      const cons = s.consistency || {};
+      const cbox = document.getElementById("consistencyBox");
+      if (cbox) {
+        const blockers = cons.blockers || [];
+        const warnings = cons.warnings || [];
+        cbox.innerHTML = `
+          <div class="sys-row"><span>Consistency</span><strong>${cons.ok ? "OK" : "CHECK"}</strong></div>
+          <div class="sys-row"><span>Ready for live</span><strong>${cons.ready_for_live ? "jā" : "nē"}</strong></div>
+          ${blockers.map(b => `<div class="alert critical"><p>${esc(b)}</p></div>`).join("")}
+          ${warnings.map(w => `<div class="alert warning"><p>${esc(w)}</p></div>`).join("")}
+        ` || `<div class="empty">Nav brīdinājumu</div>`;
       }
       document.getElementById("browserBox").innerHTML =
         `<div class="worker"><div class="name">Playwright / headless</div><div class="detail">enabled=${!!s.browser?.enabled} · headless=${!!s.browser?.headless}</div></div>`;

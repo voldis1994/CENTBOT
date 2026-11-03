@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--discover", action="store_true", help="Fetch and analyze live tasks only")
     p.add_argument("--status", action="store_true", help="Print status JSON and exit")
     p.add_argument("--live-status", action="store_true", help="Print live readiness blockers and exit")
+    p.add_argument("--consistency", action="store_true", help="Audit config true/false mismatches and exit")
     p.add_argument("--ops-report", action="store_true", help="Write/print operations evidence report")
     p.add_argument("--integrations", action="store_true", help="Verify live platform integrations")
     p.add_argument(
@@ -129,6 +130,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(engine.live_readiness(), indent=2, default=str))
         engine.shutdown()
         return 0 if engine.live_readiness().get("ready") or not config.is_live() else 1
+    if args.consistency:
+        from centbot.core.consistency import audit_config
+
+        report = audit_config(config)
+        print(json.dumps(report, indent=2, default=str))
+        engine.shutdown()
+        return 0 if report.get("ok") else 1
     if args.ops_report:
         from centbot.quality.ops_report import write_operations_report
 
