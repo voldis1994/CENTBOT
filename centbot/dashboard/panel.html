@@ -638,12 +638,35 @@
         <section class="panel">
           <div class="panel-head"><h3>Live gatavība</h3></div>
           <div id="readyBox" class="empty"></div>
+          <div class="panel-head" style="margin-top:1rem"><h3>Iestatījumi (bez YAML)</h3></div>
+          <div class="workers" style="grid-template-columns:1fr 1fr;gap:.75rem">
+            <label class="worker">Režīms
+              <select id="setMode" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem">
+                <option value="dry_run">dry_run</option>
+                <option value="live">live</option>
+              </select>
+            </label>
+            <label class="worker">Min. peļņa
+              <input id="setMinProfit" type="number" step="0.01" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
+            </label>
+            <label class="worker">IBAN
+              <input id="setIban" type="text" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
+            </label>
+            <label class="worker">Kripto maks (public)
+              <input id="setWallet" type="text" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
+            </label>
+            <label class="worker"><input id="setAutoAccept" type="checkbox"/> Auto-accept (live)</label>
+            <label class="worker">Android max
+              <input id="setAndroidMax" type="number" min="0" max="4" style="width:100%;margin-top:.35rem;background:#0c1622;color:#e8f1f8;border:1px solid rgba(120,170,210,.25);border-radius:8px;padding:.4rem"/>
+            </label>
+          </div>
+          <p style="margin-top:1rem">
+            <button class="action-btn" type="button" onclick="saveSettings()">Saglabāt iestatījumus</button>
+            <button class="danger" type="button" onclick="emergencyStop()">Emergency stop</button>
+          </p>
           <p class="honesty">
             LIVE režīms rāda panākumus tikai pēc reālas platformas darbības un neatkarīgas maksājumu verifikācijas.
-            Skaitļi šajā panelī nāk no DB/ledger — nav simulēti.
-          </p>
-          <p style="margin-top:1rem">
-            <button class="danger" type="button" onclick="emergencyStop()">Emergency stop</button>
+            Nekad neievadiet bankas paroli, CVV vai seed frāzi — panelis tos noraidīs.
           </p>
         </section>
       </section>
@@ -799,6 +822,28 @@
       await fetch("/api/emergency-stop", { method: "POST" });
       refresh();
     }
+    async function saveSettings() {
+      const patch = {
+        system: { mode: document.getElementById("setMode").value },
+        analysis: {
+          auto_accept: document.getElementById("setAutoAccept").checked,
+          min_expected_profit: Number(document.getElementById("setMinProfit").value || 0),
+        },
+        finance: {},
+        android: { max_emulators: Number(document.getElementById("setAndroidMax").value || 4) },
+      };
+      const iban = document.getElementById("setIban").value.trim();
+      const wallet = document.getElementById("setWallet").value.trim();
+      if (iban) patch.finance.bank_iban = iban;
+      if (wallet) patch.finance.crypto_wallet_public = wallet;
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }).then(r => r.json());
+      alert(res.ok ? "Iestatījumi saglabāti config/local.yaml" : ("Kļūda: " + (res.error || "unknown")));
+      refresh();
+    }
 
     function render(s) {
       STATE = s;
@@ -894,7 +939,28 @@
             </div>`).join("")
         : `<div class="empty">Nav platformu</div>`;
 
-      document.getElementById("androidBox").textContent = JSON.stringify(s.android || {}, null, 2);
+      const and = s.android || {};
+      const slots = and.slots || [];
+      document.getElementById("androidBox").innerHTML = slots.length
+        ? slots.map(sl => `<div class="worker"><div class="name">${esc(sl.name)}</div><div class="detail">${sl.alive ? "Darbojas" : "Apturēts"} · slot ${sl.index}</div></div>`).join("")
+          + `<pre style="white-space:pre-wrap;font-family:var(--mono);font-size:.72rem;color:var(--muted)">${esc(JSON.stringify({devices: and.running_devices, max: and.max_emulators}, null, 2))}</pre>`
+        : `<pre style="white-space:pre-wrap;font-family:var(--mono);font-size:.8rem">${esc(JSON.stringify(and, null, 2))}</pre>`;
+      const dist = s.distributor?.workers || {};
+      if (Object.keys(dist).length) {
+        document.getElementById("workersGrid").innerHTML = Object.entries(dist).map(([id, w]) =>
+          `<div class="worker"><div class="name">${esc(id)}</div><div class="detail">${esc(w.role)} · ${w.active}/${w.capacity}${w.serial ? " · " + esc(w.serial) : ""}</div></div>`
+        ).join("");
+      }
+      const st = s.settings || {};
+      const modeEl = document.getElementById("setMode");
+      if (modeEl) {
+        modeEl.value = st.mode === "live" ? "live" : "dry_run";
+        document.getElementById("setMinProfit").value = st.min_expected_profit ?? "";
+        document.getElementById("setIban").value = "";
+        document.getElementById("setWallet").value = "";
+        document.getElementById("setAutoAccept").checked = !!st.auto_accept;
+        document.getElementById("setAndroidMax").value = st.android_max ?? 4;
+      }
       document.getElementById("browserBox").innerHTML =
         `<div class="worker"><div class="name">Playwright / headless</div><div class="detail">enabled=${!!s.browser?.enabled} · headless=${!!s.browser?.headless}</div></div>`;
 

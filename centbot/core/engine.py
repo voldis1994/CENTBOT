@@ -135,11 +135,26 @@ class CentBotEngine:
         self.ai_analyzer = AITaskAnalyzer(self.ollama, enabled=bool(config.get("ai.enabled", False)))
         self.planner = AIWorkPlanner(self.ai_analyzer)
         self.workers = WorkerCoordinator()
+        avds = config.get("android.avds") or [
+            "CENTBOT_ANDROID_01",
+            "CENTBOT_ANDROID_02",
+            "CENTBOT_ANDROID_03",
+            "CENTBOT_ANDROID_04",
+        ]
+        if not isinstance(avds, list):
+            avds = ["CENTBOT_ANDROID_01", "CENTBOT_ANDROID_02", "CENTBOT_ANDROID_03", "CENTBOT_ANDROID_04"]
         self.emulator = EmulatorManager(
             emulator_path=str(config.get("android.emulator_path", "emulator")),
             adb_path=str(config.get("android.adb_path", "adb")),
-            max_emulators=int(config.get("android.max_emulators", 2)),
-            default_avd=str(config.get("android.default_avd", "CentBot_API_30")),
+            max_emulators=int(config.get("android.max_emulators", 4)),
+            default_avd=str(config.get("android.default_avd", "CENTBOT_ANDROID_01")),
+            avds=[str(x) for x in avds],
+        )
+        from centbot.workers.distributor import SmartWorkDistributor
+
+        self.distributor = SmartWorkDistributor(
+            max_pc=int(config.get("system.max_parallel_tasks", 4) or 4),
+            android_slots=int(config.get("android.max_emulators", 4) or 4),
         )
         self._running = False
         self._cycles = 0
@@ -249,6 +264,44 @@ class CentBotEngine:
             self.journal.record("alert_ack", "ok", alert_id=alert_id)
         return ok
 
+    def _platform_account_status(self) -> dict[str, Any]:
+        try:
+            from centbot.discovery.platform_registration import registration_status
+
+            return registration_status()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc), "accounts": {}}
+
+    def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
+        """Persist safe settings to config/local.yaml from the control panel."""
+        if not isinstance(patch, dict):
+            return {"ok": False, "error": "invalid_patch"}
+        # Never accept secrets through settings API
+        forbidden = {"bank_password", "seed_phrase", "mnemonic", "card_cvv", "private_key"}
+        flat = json.dumps(patch).lower()
+        if any(f in flat for f in forbidden):
+            return {"ok": False, "error": "forbidden_secret_in_patch"}
+        allowed_top = {"system", "analysis", "finance", "android", "notifications", "operator", "discovery", "platforms"}
+        clean = {k: v for k, v in patch.items() if k in allowed_top}
+        # finance: only public fields
+        if "finance" in clean and isinstance(clean["finance"], dict):
+            fin_allow = {
+                "bank_iban",
+                "bank_swift_bic",
+                "bank_currency",
+                "bank_account_holder",
+                "bank_provider_base_url",
+                "crypto_wallet_public",
+                "crypto_network",
+                "preferred_crypto",
+                "reconcile_payments",
+                "verify_on_chain",
+            }
+            clean["finance"] = {k: v for k, v in clean["finance"].items() if k in fin_allow}
+        path = self.config.save_local(clean)
+        self.journal.record("settings_update", "ok", path=str(path), keys=list(clean.keys()))
+        return {"ok": True, "path": str(path), "settings": self.status().get("settings")}
+
     def status(self) -> dict[str, Any]:
         counts = {
             r["status"]: r["c"]
@@ -342,6 +395,7 @@ class CentBotEngine:
             "active_tasks": active,
             "journal": journal_tail[-25:],
             "android": self.emulator.status(),
+            "distributor": self.distributor.status(),
             "browser": {
                 "enabled": bool(self.config.get("browser.enabled", True)),
                 "headless": bool(self.config.get("browser.headless", True)),
@@ -358,10 +412,21 @@ class CentBotEngine:
                 for k, v in integrations.items()
             },
             "platforms": platform_rows,
+            "platform_accounts": self._platform_account_status(),
             "discovery": {
                 "sources_ok": sum(1 for v in integrations.values() if v.get("ok")),
                 "sources_total": len(integrations),
                 "tasks_seen": sum(counts.values()),
+                "auto_register_allowed": bool(self.config.get("discovery.auto_register_allowed", False)),
+            },
+            "settings": {
+                "mode": self.config.get("system.mode"),
+                "auto_accept": bool(self.config.get("analysis.auto_accept", False)),
+                "min_expected_profit": self.config.get("analysis.min_expected_profit"),
+                "bank_iban_set": bool(str(self.config.get("finance.bank_iban") or "").strip()),
+                "crypto_wallet_set": bool(str(self.config.get("finance.crypto_wallet_public") or "").strip()),
+                "android_max": int(self.config.get("android.max_emulators", 4) or 4),
+                "operator_email": (self.config.section("operator") or {}).get("email") or "",
             },
         }
 
@@ -578,7 +643,20 @@ class CentBotEngine:
                     self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
                     self.ledger.update_platform_stats(row["platform"], accepted=1)
                     row["status"] = "accepted"
-            self.pool.submit(row["id"], int(row.get("priority") or 50), self.execute_task, row)
+            assignment = self.distributor.assign(row)
+            if not assignment.get("ok"):
+                self.journal.record("distribute", "skipped", task_id=row["id"], result=assignment)
+                continue
+            row = {**row, "_worker": assignment}
+            self.distributor.rebalance_roles()
+
+            def _run(task=row, assign=assignment):
+                try:
+                    return self.execute_task(task)
+                finally:
+                    self.distributor.release(str(task.get("id")))
+
+            self.pool.submit(row["id"], int(row.get("priority") or 50), _run)
             launched += 1
         return launched
 
@@ -758,6 +836,7 @@ class CentBotEngine:
                 self.status,
                 lambda: self.emergency.trigger("dashboard"),
                 ack_alert=self.acknowledge_alert,
+                update_settings=self.update_settings,
             )
             start_dashboard_thread(app, str(self.config.get("dashboard.host", "127.0.0.1")), int(self.config.get("dashboard.port", 8787)))
             log.info("Dashboard on http://%s:%s", self.config.get("dashboard.host"), self.config.get("dashboard.port"))

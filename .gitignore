@@ -17,6 +17,10 @@ playwright-report/
 test-results/
 config/local.yaml
 data/credentials.enc
+data/secrets.dpapi
 data/.centbot_key
 data/EMERGENCY_STOP
 data/centbot.pid
+data/setup/
+data/runtime/
+data/platforms/

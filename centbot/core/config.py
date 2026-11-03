@@ -92,6 +92,26 @@ class Config:
             node = nxt
         node[parts[-1]] = value
 
+    def save_local(self, patch: dict[str, Any], path: Path | None = None) -> Path:
+        """Merge ``patch`` into config/local.yaml (never writes secrets)."""
+        import yaml
+
+        local_path = Path(path) if path else self.path.parent / "local.yaml"
+        existing: dict[str, Any] = {}
+        if local_path.exists():
+            with open(local_path, encoding="utf-8") as fh:
+                existing = yaml.safe_load(fh) or {}
+        merged = _deep_merge(existing, patch)
+        # Strip accidental secret-looking keys
+        finance = merged.get("finance")
+        if isinstance(finance, dict):
+            for bad in ("bank_password", "seed_phrase", "mnemonic", "private_key", "card_cvv"):
+                finance.pop(bad, None)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text(yaml.safe_dump(merged, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        self._data = _deep_merge(self._data, patch)
+        return local_path
+
     @property
     def raw(self) -> dict[str, Any]:
         return copy.deepcopy(self._data)

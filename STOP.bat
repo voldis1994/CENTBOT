@@ -1,17 +1,22 @@
 @echo off
-REM CENTBOT stop script (Windows)
-SETLOCAL
+REM CENTBOT STOP — stop engine + CENTBOT-managed emulators only
+SETLOCAL EnableExtensions
 cd /d "%~dp0"
 
+set "PY=python"
+where py >nul 2>&1 && set "PY=py -3"
+
+echo [CENTBOT] Stopping CENTBOT services and managed emulators...
+%PY% -m centbot.windows.stop
+set "EC=%ERRORLEVEL%"
+
+REM Fallback PID kill if python helper unavailable
 if exist data\centbot.pid (
   set /p PID=<data\centbot.pid
-  echo [CENTBOT] Stopping PID %PID%...
   taskkill /PID %PID% /T /F >nul 2>&1
   del /f /q data\centbot.pid >nul 2>&1
-  echo [CENTBOT] Stopped.
-) else (
-  echo [CENTBOT] No PID file. Attempting to stop by process name...
-  taskkill /FI "WINDOWTITLE eq CENTBOT*" /T /F >nul 2>&1
-  echo [CENTBOT] Stop request sent.
 )
+
+echo [CENTBOT] Stop complete. Other user apps were not targeted.
 ENDLOCAL
+exit /b %EC%

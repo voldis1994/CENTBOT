@@ -17,6 +17,7 @@ def create_dashboard(
     emergency_stop: Callable[[], None],
     *,
     ack_alert: Callable[[int], bool] | None = None,
+    update_settings: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> Flask:
     app = Flask("centbot_dashboard")
 
@@ -38,6 +39,15 @@ def create_dashboard(
         if ack_alert is None:
             return jsonify({"ok": False, "error": "ack_unavailable"}), 501
         return jsonify({"ok": bool(ack_alert(alert_id)), "id": alert_id})
+
+    @app.post("/api/settings")
+    def settings():
+        from flask import request
+
+        if update_settings is None:
+            return jsonify({"ok": False, "error": "settings_unavailable"}), 501
+        payload = request.get_json(silent=True) or {}
+        return jsonify(update_settings(payload))
 
     return app
 

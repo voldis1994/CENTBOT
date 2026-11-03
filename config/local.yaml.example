@@ -1,23 +1,48 @@
-# Copy to config/local.yaml (gitignored) for live operation.
+# Copy to config/local.yaml (gitignored) — or run SETUP.bat / wizard.
+# NEVER put bank passwords, card CVV, or crypto seed phrases here.
+
 system:
-  mode: live  # or dry_run
+  mode: dry_run  # or live
+
+operator:
+  full_name: "Your Name"
+  country: "Latvia"
+  email: "you@example.com"
+  phone: ""
 
 analysis:
-  auto_accept: true  # required for live claims
+  auto_accept: false  # true only for intentional live claims
+  min_expected_profit: 0.25
 
 finance:
-  crypto_wallet_public: "0xYOUR_PUBLIC_BASE_USDC_ADDRESS"
+  bank_account_holder: "Your Name"
+  bank_iban: "LVxxxxxxxxxxxxxxxxxxxx"
+  bank_swift_bic: ""
+  bank_currency: EUR
+  bank_provider_base_url: ""  # independent bank/payment API
+  crypto_wallet_public: "0xYOUR_PUBLIC_RECEIVE_ADDRESS"
+  crypto_network: base
+  preferred_crypto: [USDC]
+  reconcile_payments: true
+  verify_on_chain: true
+  simulate_rewards_in_dry_run: false
 
-platforms:
-  basedagents:
-    keypair_path: data/basedagents-keypair.json
-  bountybook:
-    # If api.bountybook.ai is unreachable from your network, set a reachable mirror:
-    # base_url: https://your-reachable-host
-    enabled: true
+android:
+  enabled: true
+  max_emulators: 4
+  default_avd: CENTBOT_ANDROID_01
+  avds:
+    - CENTBOT_ANDROID_01
+    - CENTBOT_ANDROID_02
+    - CENTBOT_ANDROID_03
+    - CENTBOT_ANDROID_04
 
-# Environment (preferred for secrets):
-#   BASEDAGENTS_KEYPAIR_PATH=data/basedagents-keypair.json
-#   CENTBOT_ETH_PRIVATE_KEY=0x...          # TaskMarket / BountyBook signing
-#   BOUNTYBOOK_API_KEY=...                # Bearer after wallet login
-#   CENTBOT_SECRET_KEY=...                # optional Fernet key for credentials.enc
+discovery:
+  auto_register_allowed: false
+
+notifications:
+  email: true
+  desktop: true
+
+# Secrets (API keys) → Windows DPAPI / Credential Manager via SecretStore
+#   python -c "from centbot.windows.secrets import SecretStore; SecretStore().set('bank_provider_api_key','...')"

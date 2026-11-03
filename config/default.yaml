@@ -93,6 +93,7 @@ discovery:
   min_reward: 0.5
   currencies: [USD, USDC, EUR, GBP, USDT, BTC, ETH]
   duplicate_similarity_threshold: 0.92
+  auto_register_allowed: false  # wizard opt-in only
 
 analysis:
   min_expected_profit: 0.25
@@ -119,11 +120,26 @@ finance:
   min_confirmations: 1
 
 android:
-  enabled: false
+  enabled: false  # wizard/SETUP enables on Windows after AVD create
   adb_path: adb
   emulator_path: emulator
-  max_emulators: 2
-  default_avd: CentBot_API_30
+  max_emulators: 4
+  default_avd: CENTBOT_ANDROID_01
+  avds:
+    - CENTBOT_ANDROID_01
+    - CENTBOT_ANDROID_02
+    - CENTBOT_ANDROID_03
+    - CENTBOT_ANDROID_04
+
+operator:
+  full_name: ""
+  country: ""
+  email: ""
+  phone: ""
+
+notifications:
+  email: true
+  desktop: true
 
 browser:
   enabled: true
