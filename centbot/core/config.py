@@ -73,6 +73,25 @@ class Config:
     def is_live(self) -> bool:
         return str(self.get("system.mode", "dry_run")).lower() == "live"
 
+    def force_dry_run(self) -> None:
+        """Hard-lock system.mode to dry_run (used by --controlled-live)."""
+        system = self._data.setdefault("system", {})
+        if not isinstance(system, dict):
+            self._data["system"] = {"mode": "dry_run"}
+            return
+        system["mode"] = "dry_run"
+
+    def set(self, dotted: str, value: Any) -> None:
+        parts = dotted.split(".")
+        node = self._data
+        for part in parts[:-1]:
+            nxt = node.get(part)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                node[part] = nxt
+            node = nxt
+        node[parts[-1]] = value
+
     @property
     def raw(self) -> dict[str, Any]:
         return copy.deepcopy(self._data)

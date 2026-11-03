@@ -67,11 +67,11 @@ class ProgrammingExecutor(Executor):
 
             attempts.append({"attempt": attempt, "result": result, "codegen": gen_meta})
             if result.get("returncode", 1) == 0:
-                # Visible tests passed — also require independent suite when applicable
+                # Visible tests passed — independent task-specific verification is mandatory
                 tests_src = tests.read_text(encoding="utf-8") if tests.exists() else ""
                 indep = run_independent_validation(workdir, task, tests_src)
-                if not indep.get("ok") and not indep.get("skipped"):
-                    attempts[-1]["independent"] = indep
+                attempts[-1]["independent"] = indep
+                if not indep.get("ok") or indep.get("skipped"):
                     if attempt == 1 and self.ollama and self.ollama.available():
                         if solution.exists():
                             solution.unlink()
@@ -82,7 +82,7 @@ class ProgrammingExecutor(Executor):
                         category=self.category,
                         output={"codegen": gen_meta, "attempts": attempts, "independent": indep},
                         artifacts=[str(p) for p in (solution, tests, runner_script) if p.exists()],
-                        error=indep.get("error") or "independent_tests_failed",
+                        error=indep.get("error") or "insufficient_independent_verification",
                     )
                 artifacts = [str(p) for p in (solution, tests, runner_script) if p.exists()]
                 return ExecutionResult(

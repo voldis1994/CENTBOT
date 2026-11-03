@@ -149,7 +149,8 @@ def test_verify_on_chain_uses_network_token(tmp_path: Path):
 
 
 def test_bank_payment_verification_separate_from_crypto():
-    ok = verify_bank_payment(
+    # Platform settled + reference alone is insufficient
+    platform_only = verify_bank_payment(
         {
             "method": "sepa",
             "payment_status": "settled",
@@ -160,8 +161,30 @@ def test_bank_payment_verification_separate_from_crypto():
             "provider": "wise",
         }
     )
+    assert platform_only["ok"] is False
+    assert platform_only["reason"] == "provider_evidence_required"
+
+    ok = verify_bank_payment(
+        {
+            "method": "sepa",
+            "payment_status": "settled",
+            "bank_reference": "SEPA-2026-998877",
+            "iban": "DE89 3704 0044 0532 0130 00",
+            "amount": 120.5,
+            "currency": "EUR",
+            "provider": "wise",
+            "provider_evidence": {
+                "id": "wise-tx-998877",
+                "status": "completed",
+                "amount": 120.5,
+                "currency": "EUR",
+                "destination_iban": "DE89370400440532013000",
+            },
+        }
+    )
     assert ok["ok"] is True
     assert ok["method"] == "bank"
+    assert ok["provider_tx_id"] == "wise-tx-998877"
 
     crypto_on_bank = confirm_payment(
         {
@@ -225,7 +248,8 @@ def test_controlled_live_trial_report(tmp_path: Path):
     assert report["discovered"] >= 1
     assert report["verification"]["live_discovery"] is True
     assert report["verification"]["reward_received"] is False
-    assert report["verification"]["reward_blocker"] == "dry_run_no_claim"
+    assert report["verification"]["reward_blocker"] == "controlled_dry_run_no_external_actions"
+    assert report["mode"] == "dry_run"
     evidence = tmp_path / "evidence.json"
     evidence.write_text(json.dumps({"verification": report["verification"]}, indent=2), encoding="utf-8")
     assert evidence.exists()

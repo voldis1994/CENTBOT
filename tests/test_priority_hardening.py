@@ -40,10 +40,15 @@ def test_executors_reject_missing_real_inputs(tmp_path: Path):
         result = router.execute({"category": cat, "title": cat, "description": ""}, tmp_path / cat)
         assert result.ok is False
         assert "missing_input" in (result.error or "") or result.error == "android_runtime_unavailable"
-    # Programming without a problem statement cannot invent a solution
+    # Programming without a problem statement cannot invent/verify a solution
     prog = router.execute({"category": "programming", "title": "x", "description": ""}, tmp_path / "programming")
     assert prog.ok is False
-    assert prog.error in {"codegen_failed", "missing_solution_after_codegen"} or "codegen" in (prog.error or "")
+    assert prog.error in {
+        "codegen_failed",
+        "missing_solution_after_codegen",
+        "insufficient_independent_coverage",
+        "insufficient_independent_verification",
+    } or "codegen" in (prog.error or "") or "independent" in (prog.error or "")
 
 
 def test_executors_with_real_fixtures(tmp_path: Path):

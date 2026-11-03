@@ -33,6 +33,7 @@ from centbot.executors.router import TaskExecutorRouter
 from centbot.finance.currency import refresh_rates
 from centbot.finance.ledger import FinanceLedger
 from centbot.finance.optimization import ProfitOptimizer
+from centbot.finance.bank_providers import HttpBankProvider
 from centbot.finance.payment_verify import confirm_payment
 from centbot.finance.payments import PaymentIntegrations
 from centbot.inputs.fetch import download_task_inputs
@@ -143,8 +144,25 @@ class CentBotEngine:
         self._running = False
         self._cycles = 0
         self._last_snapshot: dict[str, Any] = {}
+        self._controlled_mode = False
+        self._bank_provider = None
+        bank_base = str(self.config.get("finance.bank_provider_base_url") or "")
+        bank_key_env = str(self.config.get("finance.bank_provider_api_key_env") or "")
+        bank_key = self.config.env(bank_key_env) if bank_key_env else ""
+        if bank_base:
+            self._bank_provider = HttpBankProvider(bank_base, api_key=bank_key)
         self._register_default_workers()
         self._ensure_platform_stats()
+
+    def enter_controlled_mode(self) -> None:
+        """Force dry_run and block all real accept/submit/payment booking side effects."""
+        self.config.force_dry_run()
+        self.config.set("analysis.auto_accept", False)
+        self.config.set("finance.reconcile_payments", False)
+        self.acceptor.dry_run = True
+        self.submitter.dry_run = True
+        self._controlled_mode = True
+        self.journal.record("controlled_mode", "enabled", mode="dry_run", claims_allowed=False)
 
     def _register_default_workers(self) -> None:
         self.workers.register("system", lambda ctx: {"ok": True})
@@ -277,11 +295,34 @@ class CentBotEngine:
             self.ledger.update_platform_stats(task_row["platform"], completed=1)
             from centbot.platforms.hydrate import task_from_row
 
+            result_out = outcome.get("result", {}) if isinstance(outcome.get("result"), dict) else {}
+            # Programming: never auto-submit without sufficient independent verification
+            indep = (result_out.get("output") or {}).get("independent") if isinstance(result_out.get("output"), dict) else None
+            if str(task_row.get("category") or result_out.get("category") or "") == "programming":
+                if not isinstance(indep, dict) or not indep.get("ok") or indep.get("skipped"):
+                    self.journal.record(
+                        "submit_result",
+                        "blocked",
+                        task_id=task_id,
+                        reason="insufficient_independent_verification",
+                        independent=indep,
+                    )
+                    self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("completed", utcnow(), task_id))
+                    return {
+                        "ok": False,
+                        "task_id": task_id,
+                        "evidence": str(evidence),
+                        "inputs": inputs,
+                        "error": "insufficient_independent_verification",
+                    }
+            if self._controlled_mode:
+                self.journal.record("submit_result", "blocked_controlled", task_id=task_id)
+                return {"ok": ok, "task_id": task_id, "evidence": str(evidence), "inputs": inputs, "submit": "blocked_controlled"}
             submit_payload = {
                 "summary": f"CENTBOT completed {task_row.get('title')}",
                 "evidence": str(evidence),
-                "output": outcome.get("result", {}).get("output"),
-                "content": outcome.get("result", {}).get("output"),
+                "output": result_out.get("output"),
+                "content": result_out.get("output"),
             }
             task_obj = task_row.get("_task") or task_from_row(task_row)
             submit_row = {**task_row, "_task": task_obj}
@@ -308,8 +349,8 @@ class CentBotEngine:
             task_obj = task_from_row(row)
             row = {**row, "_task": task_obj}
             if row["status"] == "eligible":
-                if self.config.is_dry_run():
-                    # Local practice run: mark accepted without calling platform claim APIs
+                if self._controlled_mode or self.config.is_dry_run():
+                    # Local practice / controlled: mark accepted without calling platform claim APIs
                     self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
                     row["status"] = "accepted"
                 else:
@@ -325,7 +366,10 @@ class CentBotEngine:
         return launched
 
     def reconcile_payments(self) -> list[dict[str, Any]]:
-        """Book income only after platform status is settled and a real tx is present."""
+        """Book income only after verified crypto on-chain or bank provider evidence."""
+        if self._controlled_mode:
+            self.journal.record("payment_check", "blocked_controlled")
+            return []
         if not self.config.get("finance.reconcile_payments", True):
             return []
         require_tx = bool(self.config.get("finance.require_tx_hash", True))
@@ -333,6 +377,7 @@ class CentBotEngine:
         pending = self.db.fetchall(
             "SELECT * FROM tasks WHERE status IN ('completed','submitted','verified') ORDER BY updated_at DESC LIMIT 40"
         )
+        expected_iban = str(self.config.get("finance.bank_iban") or "").strip() or None
         for row in pending:
             conn = self.platforms.get(row["platform"])
             if not conn or not hasattr(conn, "check_payment"):
@@ -342,17 +387,25 @@ class CentBotEngine:
             except Exception as exc:  # noqa: BLE001
                 self.journal.record("payment_check", "error", task_id=row["id"], error=str(exc))
                 continue
+            pay_dict = pay if isinstance(pay, dict) else None
+            method_hint = ""
+            if isinstance(pay_dict, dict):
+                nested = pay_dict.get("payment") if isinstance(pay_dict.get("payment"), dict) else pay_dict
+                method_hint = str(nested.get("method") or nested.get("payment_method") or nested.get("rail") or "").lower()
+            is_bank = method_hint in {"bank", "bank_transfer", "sepa", "wise", "paypal", "fiat"}
             wallet = str(self.config.get("finance.crypto_wallet_public") or "").strip() or None
-            if not wallet:
+            if not is_bank and not wallet:
                 self.journal.record("payment_check", "pending", task_id=row["id"], reason="recipient_required")
                 continue
             confirmed = confirm_payment(
-                pay if isinstance(pay, dict) else None,
+                pay_dict,
                 require_tx=require_tx,
                 expected_wallet=wallet,
                 expected_amount=float(row.get("reward_amount") or 0) or None,
                 min_confirmations=int(self.config.get("finance.min_confirmations", 1)),
                 verify_chain=bool(self.config.get("finance.verify_on_chain", True)),
+                expected_iban=expected_iban,
+                provider_client=self._bank_provider,
             )
             if not confirmed.get("ok"):
                 self.journal.record(
@@ -363,29 +416,49 @@ class CentBotEngine:
                     payment_status=confirmed.get("status"),
                     tx_hash=confirmed.get("tx_hash"),
                     confirmations=confirmed.get("confirmations"),
+                    method=confirmed.get("method"),
                 )
                 continue
             amount = float(confirmed.get("amount") or row.get("reward_amount") or 0)
-            # Prefer on-chain matched transfer amount when present
             transfer = confirmed.get("transfer") if isinstance(confirmed.get("transfer"), dict) else None
             if transfer and transfer.get("amount") is not None:
                 amount = float(transfer["amount"])
-            currency = str((transfer or {}).get("token") or confirmed.get("currency") or row.get("reward_currency") or "USDC")
-            tx_ref = str(confirmed.get("tx_hash"))
-            recorded = self.ledger.record_crypto_reward(
-                amount=amount,
-                currency=currency,
-                platform=row["platform"],
-                task_id=row["id"],
-                tx_ref=tx_ref,
-            )
+            method = str(confirmed.get("method") or ("bank" if is_bank else "crypto")).lower()
+            if method == "bank":
+                currency = str(confirmed.get("currency") or row.get("reward_currency") or "EUR")
+                tx_ref = str(confirmed.get("provider_tx_id") or confirmed.get("bank_reference") or confirmed.get("tx_hash"))
+                recorded = self.ledger.record_bank_reward(
+                    amount=amount,
+                    currency=currency,
+                    platform=row["platform"],
+                    task_id=row["id"],
+                    tx_ref=tx_ref,
+                )
+            else:
+                currency = str((transfer or {}).get("token") or confirmed.get("currency") or row.get("reward_currency") or "USDC")
+                tx_ref = str(confirmed.get("tx_hash"))
+                recorded = self.ledger.record_crypto_reward(
+                    amount=amount,
+                    currency=currency,
+                    platform=row["platform"],
+                    task_id=row["id"],
+                    tx_ref=tx_ref,
+                )
             if recorded:
                 self.optimizer.learn_from_reward(row["platform"], True, amount_base=amount)
                 self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("paid", utcnow(), row["id"]))
-                updates.append({"task_id": row["id"], "tx_ref": tx_ref, "amount": amount, "currency": currency})
-                self.journal.record("payment_received", "ok", task_id=row["id"], tx_ref=tx_ref, amount=amount)
+                updates.append(
+                    {
+                        "task_id": row["id"],
+                        "tx_ref": tx_ref,
+                        "amount": amount,
+                        "currency": currency,
+                        "method": method,
+                    }
+                )
+                self.journal.record("payment_received", "ok", task_id=row["id"], tx_ref=tx_ref, amount=amount, method=method)
             else:
-                self.journal.record("payment_received", "duplicate", task_id=row["id"], tx_ref=tx_ref)
+                self.journal.record("payment_received", "duplicate", task_id=row["id"], tx_ref=tx_ref, method=method)
         return updates
 
     def cycle_once(self) -> dict[str, Any]:
@@ -459,22 +532,26 @@ class CentBotEngine:
         """Live discovery trial: fetch real gigs, analyze, optionally execute locally without claims."""
         return self.run_live_trial(execute_local=True)
 
-    def run_live_trial(self, *, execute_local: bool = True) -> dict[str, Any]:
-        """Pull real platform feeds, analyze, and (optionally) practice-execute without claiming.
+    def run_live_trial(self, *, execute_local: bool = True, controlled: bool = True) -> dict[str, Any]:
+        """Pull real platform feeds and optionally practice-execute locally.
 
-        This is the controlled live test: real discovery on live APIs, optional local
-        execution, payment reconcile probe — but **no** claim/submit unless mode is live
-        and auto_accept is enabled with credentials.
+        When ``controlled=True`` (default for --controlled-live), mode is forced to
+        dry_run and accept/submit/payment booking against platforms is fully blocked
+        even if the loaded config said ``mode: live``.
         """
         from centbot.sandbox.isolated import sandbox_backend_info
 
+        if controlled:
+            self.enter_controlled_mode()
         dry = self.config.is_dry_run()
         report: dict[str, Any] = {
             "integrations": self.integration_report(),
             "mode": self.config.get("system.mode"),
-            "claims_allowed": (not dry) and bool(self.config.get("analysis.auto_accept")),
+            "claims_allowed": False if controlled else ((not dry) and bool(self.config.get("analysis.auto_accept"))),
             "sandbox": sandbox_backend_info(),
-            "controlled": True,
+            "controlled": bool(controlled or self._controlled_mode),
+            "acceptor_dry_run": bool(self.acceptor.dry_run),
+            "submitter_dry_run": bool(self.submitter.dry_run),
         }
         analyzed = self.discover_and_analyze()
         report["discovered"] = len(analyzed)
@@ -492,10 +569,12 @@ class CentBotEngine:
         results = []
         if execute_local:
             for row in sort_by_priority(eligible)[: int(self.config.get("system.max_parallel_tasks", 4))]:
+                # Local-only accept mark — never call platform.accept_task in controlled mode
                 self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
                 results.append(self.execute_task(row))
         report["executed"] = results
-        report["payments"] = self.reconcile_payments()
+        # Controlled mode skips payment booking; still record the blocker explicitly
+        report["payments"] = [] if (controlled or self._controlled_mode) else self.reconcile_payments()
         report["profit"] = self.ledger.total_profit()
         report["income"] = self.ledger.income_history(20)
         report["platform_stats"] = self.ledger.platform_profitability()
@@ -503,10 +582,13 @@ class CentBotEngine:
             "live_discovery": report["discovered"] > 0,
             "local_execution_attempted": bool(execute_local),
             "local_execution_ok": any(r.get("ok") for r in results) if results else None,
-            "reward_received": bool(report["payments"]),
-            "reward_blocker": None
-            if report["payments"]
+            "reward_received": False,
+            "reward_blocker": "controlled_dry_run_no_external_actions"
+            if (controlled or self._controlled_mode)
             else ("dry_run_no_claim" if dry else "no_settled_payout_observed"),
+            "external_accept_blocked": bool(controlled or self._controlled_mode or self.acceptor.dry_run),
+            "external_submit_blocked": bool(controlled or self._controlled_mode or self.submitter.dry_run),
+            "external_payment_booking_blocked": bool(controlled or self._controlled_mode),
         }
         self.journal.record(
             "live_trial",
@@ -514,8 +596,8 @@ class CentBotEngine:
             discovered=report["discovered"],
             eligible=report["eligible"],
             executed=len(results),
-            controlled=True,
-            reward_received=bool(report["payments"]),
+            controlled=bool(controlled or self._controlled_mode),
+            reward_received=False,
         )
         return report
 

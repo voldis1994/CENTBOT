@@ -335,8 +335,12 @@ def verify_bank_payment(
     expected_currency: str | None = None,
     expected_iban: str | None = None,
     amount_tolerance: float = 0.01,
+    provider_client: Any | None = None,
+    require_provider_evidence: bool = True,
 ) -> dict[str, Any]:
-    """Verify a bank/SEPA/Wise/PayPal-style payout separately from crypto rails."""
+    """Verify bank payouts with provider evidence — platform settled alone is insufficient."""
+    from centbot.finance.bank_providers import verify_provider_evidence
+
     fields = extract_payment_fields(pay_response)
     status = str(fields.get("status") or "").lower()
     settled = status in SETTLED or status.endswith("settled")
@@ -370,16 +374,37 @@ def verify_bank_payment(
     if expected_amount is not None and abs(amount_f - float(expected_amount)) > amount_tolerance:
         return {"ok": False, "reason": "amount_mismatch", "method": "bank", **fields}
 
+    # Platform settled + reference is NOT sufficient proof of received funds.
+    if not require_provider_evidence:
+        return {
+            "ok": False,
+            "reason": "provider_evidence_required",
+            "method": "bank",
+            "hint": "refusing platform-only confirmation",
+        }
+
+    provider = verify_provider_evidence(
+        fields=fields,
+        expected_amount=amount_f,
+        expected_currency=currency,
+        expected_iban=str(iban) if iban else expected_iban,
+        provider_client=provider_client,
+        amount_tolerance=amount_tolerance,
+    )
+    if not provider.get("ok"):
+        return {**fields, **provider, "ok": False, "method": "bank", "platform_status": status}
+
     return {
+        **fields,
+        **provider,
         "ok": True,
-        "reason": "bank_confirmed",
         "method": "bank",
         "bank_reference": ref,
-        "iban": iban,
-        "amount": amount_f,
-        "currency": currency,
-        "provider": fields.get("provider"),
+        "iban": provider.get("iban") or iban,
+        "amount": provider.get("amount", amount_f),
+        "currency": provider.get("currency") or currency,
         "status": status,
+        "tx_hash": provider.get("provider_tx_id") or ref,
     }
 
 
@@ -400,6 +425,7 @@ def confirm_payment(
     min_confirmations: int = 1,
     verify_chain: bool = True,
     expected_iban: str | None = None,
+    provider_client: Any | None = None,
 ) -> dict[str, Any]:
     """Dispatch to bank or multi-chain crypto verification."""
     fields = extract_payment_fields(pay_response)
@@ -410,6 +436,7 @@ def confirm_payment(
             expected_amount=expected_amount,
             expected_currency=str(fields.get("currency") or "") or None,
             expected_iban=expected_iban,
+            provider_client=provider_client,
         )
 
     status = str(fields.get("status") or "").lower()

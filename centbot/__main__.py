@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--controlled-live",
         action="store_true",
-        help="Controlled real-platform test (dry_run): discover + local execute, write evidence JSON",
+        help="Controlled real-platform test — ALWAYS dry_run; blocks accept/submit/payment booking",
     )
     p.add_argument("--discover", action="store_true", help="Fetch and analyze live tasks only")
     p.add_argument("--status", action="store_true", help="Print status JSON and exit")
@@ -52,6 +52,16 @@ def main(argv: list[str] | None = None) -> int:
     overrides: dict = {}
     if args.mode:
         overrides["system"] = {"mode": args.mode}
+
+    # --controlled-live ALWAYS wins over config and --mode live
+    if args.controlled_live:
+        overrides = {
+            **overrides,
+            "system": {**(overrides.get("system") or {}), "mode": "dry_run"},
+            "analysis": {"auto_accept": False},
+            "finance": {"reconcile_payments": False},
+        }
+
     config = Config(args.config, overrides=overrides or None)
 
     if args.register_basedagents:
@@ -90,16 +100,20 @@ def main(argv: list[str] | None = None) -> int:
         engine.shutdown()
         return 0
     if args.demo:
-        report = engine.run_live_trial(execute_local=True)
+        report = engine.run_live_trial(execute_local=True, controlled=True)
         print(json.dumps(report, indent=2, default=str))
         engine.shutdown()
         return 0
     if args.controlled_live:
-        report = engine.run_live_trial(execute_local=True)
+        # Belt-and-suspenders: force controlled even if YAML had mode: live
+        engine.enter_controlled_mode()
+        report = engine.run_live_trial(execute_local=True, controlled=True)
         evidence = {
             "controlled": True,
             "mode": report.get("mode"),
             "claims_allowed": report.get("claims_allowed"),
+            "acceptor_dry_run": report.get("acceptor_dry_run"),
+            "submitter_dry_run": report.get("submitter_dry_run"),
             "sandbox": report.get("sandbox"),
             "integrations": {
                 k: {"ok": bool(v.get("ok")), "sample_task_count": v.get("sample_task_count")}
@@ -117,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(json.dumps(evidence, indent=2, default=str), encoding="utf-8")
         print(json.dumps({"evidence": str(out), "verification": evidence.get("verification")}, indent=2, default=str))
         engine.shutdown()
-        ok = bool((evidence.get("verification") or {}).get("live_discovery"))
+        ok = bool((evidence.get("verification") or {}).get("live_discovery")) and evidence.get("mode") == "dry_run"
         return 0 if ok else 1
     if args.once:
         summary = engine.cycle_once()
