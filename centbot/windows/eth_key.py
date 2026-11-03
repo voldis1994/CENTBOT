@@ -88,6 +88,39 @@ def signing_wallet_status(root: Path | None = None) -> dict[str, Any]:
     }
 
 
+def _looks_like_public_address(raw: str) -> bool:
+    k = normalize_private_key(raw)
+    # EIP-55 address is 0x + 40 hex = 42 chars (user pasted Revolut/MetaMask receive address)
+    return len(k) == 42 and all(c in "0123456789abcdefABCDEF" for c in k[2:])
+
+
+def save_payout_address(address: str, *, root: Path | None = None) -> dict[str, Any]:
+    """Store public receive address for payouts only (Revolut / exchange deposit)."""
+    base = _root(root)
+    addr = normalize_private_key(address)
+    if not _looks_like_public_address(addr):
+        return {"ok": False, "error": "not_public_address"}
+    try:
+        from centbot.core.config import Config
+
+        cfg = Config()
+        # Config() uses install_root; force CENTBOT_ROOT via env already set by bat
+        path = cfg.save_local({"finance": {"crypto_wallet_public": addr}})
+        return {
+            "ok": True,
+            "payout_only": True,
+            "address": addr,
+            "path": str(path),
+            "hint_lv": (
+                "Saglabāta SAŅEMŠANAS adrese (Revolut/exchange OK payoutiem). "
+                "TaskMarket claimam vajag MetaMask PRIVATE KEY — Revolut to nedod. "
+                "BasedAgents strada bez ETH private key."
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def set_private_key(private_key: str, *, root: Path | None = None) -> dict[str, Any]:
     base = _root(root)
     (base / "data").mkdir(parents=True, exist_ok=True)
@@ -96,12 +129,33 @@ def set_private_key(private_key: str, *, root: Path | None = None) -> dict[str, 
         return {"ok": False, "error": "empty_key", "hint_lv": "Atslēga tukša — ielīmē 0x… hex (64 simboli)."}
     if " " in (private_key or "") and len((private_key or "").split()) >= 12:
         return {"ok": False, "error": "seed_phrase_forbidden", "hint_lv": "Nedrīkst seed frāzi — tikai private key."}
+    if _looks_like_public_address(key):
+        payout = save_payout_address(key, root=base)
+        return {
+            "ok": False,
+            "error": "public_address_not_private_key",
+            "got_len": len(key),
+            "payout_saved": bool(payout.get("ok")),
+            "payout": payout,
+            "hint_lv": (
+                "Tu ielīmēji PUBLISKO adresi (0x + 40 = 42 simboli) — tā ir Revolut/MetaMask saņemšanas adrese. "
+                "Private key ir GARĀKS: 0x + 64 hex = 66 simboli. "
+                "Revolut Crypto PARASTI NEDOD private key (custodial). "
+                "TaskMarket: uzliec MetaMask (vai Rabby), Account details → Show private key. "
+                "BasedAgents claimam ETH private key NEVAJAG — START.bat / REGISTER_BASED.bat. "
+                + ("Payout adrese saglabāta finance.crypto_wallet_public." if payout.get("ok") else "")
+            ),
+        }
     if len(key) != 66:
         return {
             "ok": False,
             "error": "invalid_key_length",
             "got_len": len(key),
-            "hint_lv": f"Gaidīju 0x+64 hex (66 simboli), sanāca {len(key)}. Nokopē no MetaMask Account details → Private key.",
+            "hint_lv": (
+                f"Gaidīju private key 0x+64 hex (66 simboli), sanāca {len(key)}. "
+                "Ja 42 simboli — tā ir publiskā adrese (Revolut), ne atslēga. "
+                "MetaMask → Account details → Private key."
+            ),
         }
     try:
         from eth_account import Account

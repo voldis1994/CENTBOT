@@ -1,6 +1,5 @@
 @echo off
-REM Save ETH signing key so TaskMarket claims work after START.
-REM Uses VISIBLE paste (getpass is broken in many Windows CMD sessions).
+REM ETH signing key for TaskMarket. Revolut public address is NOT a private key.
 SETLOCAL EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 set "CENTBOT_ROOT=%CD%"
@@ -25,41 +24,41 @@ if not exist data mkdir data
 
 echo.
 echo === CENTBOT ETH signing key ===
-echo Ielime MetaMask Private key ^(0x + 64 hex^).
-echo NE seed frāzi. Publiskā adrese claimam NEPITIEk.
+echo.
+echo TaskMarket claimam vajag PRIVATE KEY:
+echo   0x + 64 hex  =  66 simboli  ^(GARŠ^)
+echo.
+echo NEPAREIZI ^(tas ko biezi iedod Revolut^):
+echo   0x + 40 hex  =  42 simboli  = publiska SANEMSANA adrese
+echo.
+echo Revolut Crypto parasti NEDOD private key.
+echo Variants: MetaMask / Rabby → Account details → Show private key
+echo BasedAgents strada BEZ ETH private key — START.bat pietiek.
 echo.
 
 set "KEY="
-set /p KEY=Private key^> 
+set /p KEY=Private key ^(vai payout adrese^)^> 
 if not defined KEY (
   echo [CENTBOT] Tukša ievade — nesaglabāju.
   pause
   exit /b 1
 )
 
-REM Strip accidental quotes
 set "KEY=%KEY:"=%"
 
-echo [CENTBOT] Saving to %CD%\data\eth.env + credentials.enc ...
+echo [CENTBOT] Checking / saving ...
 "%PY%" -m centbot.windows.eth_key set --key "%KEY%"
 set "EC=%ERRORLEVEL%"
 
 if "%EC%"=="0" (
-  if exist data\eth.env (
-    echo [CENTBOT] OK — data\eth.env exists.
-  ) else (
-    echo [CENTBOT] WARNING: Python said OK but eth.env missing — writing fallback...
-    > data\eth.env echo CENTBOT_ETH_PRIVATE_KEY=%KEY%
-  )
-  echo.
-  echo [CENTBOT] Tagad: STOP.bat  tad  START.bat
-  echo           Panelī: Parakstīšanas maks = IELĀDĒTS
+  echo [CENTBOT] Private key SAGLABATS. STOP.bat + START.bat
 ) else (
-  echo [CENTBOT] Nesaglabājās. Skaties kļūdu augstāk.
-  echo           Pārliecinies ka atslēga ir 0x + tieši 64 hex simboli.
+  echo.
+  echo [CENTBOT] Private key NESAGLABATS ^(skaties hint augstak^).
+  echo           Ja ielimeji Revolut adresi — payout var but saglabats.
+  echo           LIVE bez TaskMarket: START.bat  ^(BasedAgents^)
 )
 
-REM Clear key from this CMD session memory
 set "KEY="
 echo.
 pause
