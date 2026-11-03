@@ -188,9 +188,16 @@ def register_agent(
 
 
 def resolve_identity(config: dict[str, Any], credential_store_get=None) -> BasedAgentsIdentity | None:
+    from centbot.runtime_paths import install_root
+
+    candidates: list[Path] = []
     path = config.get("keypair_path") or os.environ.get("BASEDAGENTS_KEYPAIR_PATH")
     if path:
-        ident = load_identity_file(Path(path))
+        p = Path(path)
+        candidates.append(p if p.is_absolute() else install_root() / p)
+    candidates.append(install_root() / "data" / "basedagents-keypair.json")
+    for p in candidates:
+        ident = load_identity_file(p)
         if ident:
             return ident
     if credential_store_get:

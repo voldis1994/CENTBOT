@@ -114,8 +114,18 @@ class CentBotEngine:
         )
         self.repair = ErrorRepair(max_attempts=2)
         if not sandbox_available():
-            self.db.add_alert("critical", "centbot.sandbox.isolated unavailable", source="sandbox")
-            self.journal.record("sandbox", "error", available=False)
+            # Windows often has no Docker — PC live claims still work with restrictor fallback
+            msg = (
+                "sandbox: Docker/Podman nav — PC lane lieto userspace restrictor "
+                "(CENTBOT_REQUIRE_CONTAINER=0). Instalē Docker, ja vajag stingru izolāciju."
+            )
+            existing = self.db.fetchone(
+                "SELECT id FROM alerts WHERE acknowledged=0 AND source=? AND message=? LIMIT 1",
+                ("sandbox", msg),
+            )
+            if not existing:
+                self.db.add_alert("warning", msg, source="sandbox")
+            self.journal.record("sandbox", "warn", available=False, backend="restrictor_fallback")
         else:
             self.journal.record("sandbox", "ok", available=True)
         try:
@@ -187,6 +197,12 @@ class CentBotEngine:
             self.config.set("finance.simulate_rewards_in_dry_run", False)
             self.journal.record("config", "sanitized", field="simulate_rewards_in_dry_run", value=False)
             self.db.add_alert("warning", "simulate_rewards_in_dry_run forced off — no synthetic income", source="finance")
+        # Live: ensure BasedAgents keypair exists so claims are not identity_missing spam
+        if self.config.is_live() and not self._controlled_mode:
+            try:
+                self._ensure_basedagents_identity()
+            except Exception as exc:  # noqa: BLE001
+                self.journal.record("basedagents_register", "error", error=str(exc))
 
     def enter_controlled_mode(self) -> None:
         """Force dry_run and block all real accept/submit/payment booking side effects.
@@ -312,6 +328,34 @@ class CentBotEngine:
             return signing_wallet_status(self.root)
         except Exception as exc:  # noqa: BLE001
             return {"loaded": False, "error": str(exc)}
+
+    def _ensure_basedagents_identity(self) -> dict[str, Any]:
+        """Create/register BasedAgents keypair when missing (live claim prerequisite)."""
+        conn = self.platforms.get("basedagents")
+        if not conn or not getattr(conn, "enabled", False):
+            return {"ok": False, "skipped": True, "reason": "platform_disabled"}
+        if getattr(conn, "identity", None):
+            return {"ok": True, "skipped": True, "reason": "already_loaded"}
+        if not bool(self.config.get("platforms.basedagents.auto_register", True)):
+            return {"ok": False, "skipped": True, "reason": "auto_register_disabled"}
+        try:
+            from centbot.windows.register_based import register
+
+            name = str((self.config.section("operator") or {}).get("full_name") or "CENTBOT")
+            result = register(name=name.split()[0] if name else "CENTBOT", root=self.root)
+            if result.get("ok"):
+                # Reload connector identity
+                from centbot.platforms.auth_basedagents import resolve_identity
+
+                cfg = self.config.section("platforms").get("basedagents", {}) or {}
+                conn.identity = resolve_identity(cfg, self.credentials.get)
+                self.journal.record("basedagents_register", "ok", agent_id=result.get("agent_id"))
+            else:
+                self.journal.record("basedagents_register", "error", result=result)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            self.journal.record("basedagents_register", "error", error=str(exc))
+            return {"ok": False, "error": str(exc)}
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
         """Persist safe settings to config/local.yaml from the control panel."""
@@ -737,6 +781,21 @@ class CentBotEngine:
                                 **blocked,
                                 str(row.get("platform")): "wallet_required",
                             }
+                        if str(err) == "basedagents_identity_missing":
+                            alert_msg = (
+                                "basedagents: identity_missing — palaid REGISTER_BASED.bat vai FIX_LIVE.bat, tad STOP+START"
+                            )
+                            self._accept_blocked_platforms = {
+                                **blocked,
+                                str(row.get("platform")): "basedagents_identity_missing",
+                            }
+                            # Opportunistic auto-register once per process
+                            if not getattr(self, "_based_register_attempted", False):
+                                self._based_register_attempted = True
+                                try:
+                                    self._ensure_basedagents_identity()
+                                except Exception as reg_exc:  # noqa: BLE001
+                                    self.journal.record("basedagents_register", "error", error=str(reg_exc))
                         # Deduplicate identical open alerts
                         existing = self.db.fetchone(
                             "SELECT id FROM alerts WHERE acknowledged=0 AND message=? LIMIT 1",

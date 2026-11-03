@@ -49,6 +49,8 @@ if not exist certs\cacert.pem (
 
 set "CENTBOT_ROOT=%CD%"
 set "CENTBOT_USE_EXE=0"
+REM Without Docker, allow userspace restrictor so PC claims/execution continue
+if not defined CENTBOT_REQUIRE_CONTAINER set "CENTBOT_REQUIRE_CONTAINER=0"
 set "SSL_CERT_FILE=%CD%\certs\cacert.pem"
 set "REQUESTS_CA_BUNDLE=%CD%\certs\cacert.pem"
 set "CURL_CA_BUNDLE=%CD%\certs\cacert.pem"
