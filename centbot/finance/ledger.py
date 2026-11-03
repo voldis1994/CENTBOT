@@ -69,7 +69,19 @@ class FinanceLedger:
         )
 
     def total_profit(self) -> float:
-        row = self.db.fetchone("SELECT COALESCE(SUM(amount_base),0) AS total FROM income WHERE status IN ('recorded','received','approved')")
+        """Earned profit: rewards minus fees/expenses. Withdrawals are transfers, not losses."""
+        row = self.db.fetchone(
+            "SELECT COALESCE(SUM(amount_base),0) AS total FROM income "
+            "WHERE status IN ('recorded','received','approved') AND kind != 'withdrawal'"
+        )
+        return float(row["total"] if row else 0)
+
+    def cash_balance(self) -> float:
+        """Ledger cash after withdrawals (money moved to external accounts)."""
+        row = self.db.fetchone(
+            "SELECT COALESCE(SUM(amount_base),0) AS total FROM income "
+            "WHERE status IN ('recorded','received','approved')"
+        )
         return float(row["total"] if row else 0)
 
     def income_history(self, limit: int = 100) -> list[dict[str, Any]]:

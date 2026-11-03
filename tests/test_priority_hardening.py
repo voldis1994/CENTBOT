@@ -74,13 +74,15 @@ def test_browser_and_android_wired_in_router():
 def test_payment_requires_real_tx():
     assert not is_real_tx_ref("sim-abc")
     assert not is_real_tx_ref("dryrun-1")
+    assert not is_real_tx_ref("arbitrary-long-ref")
     assert is_real_tx_ref("0x" + "ab" * 32)
-    denied = confirm_payment({"payment_status": "settled"}, require_tx=True)
+    denied = confirm_payment({"payment_status": "settled"}, require_tx=True, verify_chain=False)
     assert denied["ok"] is False
     assert denied["reason"] == "missing_or_invalid_tx"
     ok = confirm_payment(
         {"payment_status": "settled", "payment_tx_hash": "0x" + "cd" * 32, "amount": 5, "currency": "USDC"},
         require_tx=True,
+        verify_chain=False,
     )
     assert ok["ok"] is True
 
@@ -107,7 +109,7 @@ def test_requirements_check(tmp_path: Path):
     task = {
         "category": "text",
         "title": "Summarize feedback",
-        "description": "- Capture product themes\n- Mention shipping feedback\nDeliverable: summary.json",
+        "description": "Deliverable: summary.json\nWrite a concise summary.",
     }
     out = tmp_path / "summary.json"
     out.write_text(
@@ -152,7 +154,7 @@ def test_claim_execute_submit_paid_flow(tmp_path: Path):
                     platform="fakeboard",
                     external_id="task-1",
                     title="Summarize product notes",
-                    description="Produce a short summary of the product notes. Deliverable summary.",
+                    description="Deliverable: summary.json\nWrite a short product summary.",
                     reward_amount=5.0,
                     reward_currency="USDC",
                     funded=True,
@@ -222,7 +224,12 @@ def test_claim_execute_submit_paid_flow(tmp_path: Path):
                 "bountybook": {"enabled": False},
                 "agentizable": {"enabled": False},
             },
-            "finance": {"reconcile_payments": True, "require_tx_hash": True, "simulate_rewards_in_dry_run": False},
+            "finance": {
+                "reconcile_payments": True,
+                "require_tx_hash": True,
+                "verify_on_chain": False,  # chain mocked in dedicated security tests
+                "simulate_rewards_in_dry_run": False,
+            },
             "browser": {"enabled": False},
             "android": {"enabled": False},
         }

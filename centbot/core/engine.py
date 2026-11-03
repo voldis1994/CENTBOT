@@ -342,7 +342,14 @@ class CentBotEngine:
             except Exception as exc:  # noqa: BLE001
                 self.journal.record("payment_check", "error", task_id=row["id"], error=str(exc))
                 continue
-            confirmed = confirm_payment(pay if isinstance(pay, dict) else None, require_tx=require_tx)
+            confirmed = confirm_payment(
+                pay if isinstance(pay, dict) else None,
+                require_tx=require_tx,
+                expected_wallet=str(self.config.get("finance.crypto_wallet_public") or "") or None,
+                expected_amount=float(row.get("reward_amount") or 0) or None,
+                min_confirmations=int(self.config.get("finance.min_confirmations", 1)),
+                verify_chain=bool(self.config.get("finance.verify_on_chain", True)),
+            )
             if not confirmed.get("ok"):
                 self.journal.record(
                     "payment_check",
@@ -351,10 +358,15 @@ class CentBotEngine:
                     reason=confirmed.get("reason"),
                     payment_status=confirmed.get("status"),
                     tx_hash=confirmed.get("tx_hash"),
+                    confirmations=confirmed.get("confirmations"),
                 )
                 continue
             amount = float(confirmed.get("amount") or row.get("reward_amount") or 0)
-            currency = str(confirmed.get("currency") or row.get("reward_currency") or "USDC")
+            # Prefer on-chain matched transfer amount when present
+            transfer = confirmed.get("transfer") if isinstance(confirmed.get("transfer"), dict) else None
+            if transfer and transfer.get("amount") is not None:
+                amount = float(transfer["amount"])
+            currency = str((transfer or {}).get("token") or confirmed.get("currency") or row.get("reward_currency") or "USDC")
             tx_ref = str(confirmed.get("tx_hash"))
             recorded = self.ledger.record_crypto_reward(
                 amount=amount,
