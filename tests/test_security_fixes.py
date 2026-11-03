@@ -48,11 +48,38 @@ def test_confirm_payment_requires_on_chain_when_enabled():
 
 def test_confirm_payment_platform_only_when_chain_disabled():
     result = confirm_payment(
-        {"payment_status": "settled", "payment_tx_hash": "0x" + "cd" * 32, "amount": 5, "currency": "USDC"},
+        {
+            "payment_status": "settled",
+            "payment_tx_hash": "0x" + "cd" * 32,
+            "amount": 5,
+            "currency": "USDC",
+            "to": "0x1111111111111111111111111111111111111111",
+        },
         require_tx=True,
         verify_chain=False,
     )
     assert result["ok"] is True
+
+
+def test_confirm_payment_requires_recipient():
+    missing = confirm_payment(
+        {"payment_status": "settled", "payment_tx_hash": "0x" + "cd" * 32, "amount": 5, "currency": "USDC"},
+        require_tx=True,
+        verify_chain=False,
+    )
+    assert missing["ok"] is False
+    assert missing["reason"] == "recipient_required"
+    bad = confirm_payment(
+        {
+            "payment_status": "settled",
+            "payment_tx_hash": "0x" + "cd" * 32,
+            "to": "not-an-address",
+        },
+        require_tx=True,
+        verify_chain=False,
+    )
+    assert bad["ok"] is False
+    assert bad["reason"] == "recipient_required"
 
 
 def test_on_chain_verify_matches_mock_receipt():
@@ -100,30 +127,77 @@ def test_ssrf_blocks_localhost_and_metadata():
 
 def test_safe_download_enforces_size(tmp_path: Path):
     dest = tmp_path / "big.bin"
-
-    class FakeResp:
-        status_code = 200
-        headers = {"Content-Length": "100"}
-        is_redirect = False
-
-        def raise_for_status(self):
-            return None
-
-        def iter_content(self, chunk_size=0):
-            yield b"x" * 50
-            yield b"y" * 50
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-    with patch("centbot.inputs.fetch.requests.get", return_value=FakeResp()):
-        with patch("centbot.inputs.fetch.validate_url_destination", return_value={"ok": True, "host": "example.com", "ips": ["1.2.3.4"]}):
+    with patch(
+        "centbot.inputs.fetch.validate_url_destination",
+        return_value={"ok": True, "host": "example.com", "ips": ["93.184.216.34"]},
+    ):
+        with patch(
+            "centbot.inputs.pinned_http.get_pinned",
+            return_value={"ok": False, "error": "content_too_large", "bytes": 100},
+        ):
             result = safe_download("https://example.com/x", dest, max_bytes=40)
     assert result["ok"] is False
     assert result["error"] == "content_too_large"
+
+
+def test_safe_download_uses_pinned_dns_ips(tmp_path: Path):
+    """Download must reuse validated IPs (no second DNS lookup / TOCTOU)."""
+    dest = tmp_path / "ok.bin"
+    pinned_ips = ["93.184.216.34"]
+
+    def fake_validate(url, allow_http=False):
+        return {"ok": True, "host": "example.com", "ips": list(pinned_ips)}
+
+    seen: dict = {}
+
+    def fake_get_pinned(url, allowed_ips, **kwargs):
+        seen["ips"] = list(allowed_ips)
+        seen["url"] = url
+        return {
+            "ok": True,
+            "url": url,
+            "bytes": 4,
+            "content": b"data",
+            "status": 200,
+            "pinned_ip": allowed_ips[0],
+            "hops": 0,
+        }
+
+    with patch("centbot.inputs.fetch.validate_url_destination", side_effect=fake_validate):
+        with patch("centbot.inputs.pinned_http.get_pinned", side_effect=fake_get_pinned):
+            result = safe_download("https://example.com/x", dest)
+    assert result["ok"] is True
+    assert result["pinned_ip"] == "93.184.216.34"
+    assert seen["ips"] == pinned_ips
+    assert dest.read_bytes() == b"data"
+
+
+def test_sandbox_blocks_network_and_host_fs(tmp_path: Path):
+    from centbot.sandbox.isolated import run_python_isolated
+
+    net = run_python_isolated(code="import socket", workdir=tmp_path / "net", timeout=15)
+    assert net.get("ok") is False
+    assert "sandbox blocked import" in (net.get("stderr") or "") or net.get("returncode") != 0
+
+    outside = tmp_path / "secret.txt"
+    outside.write_text("top-secret", encoding="utf-8")
+    # Attempt to read a path outside the sandbox workdir
+    fs = run_python_isolated(
+        code=f"print(open(r'{outside}').read())",
+        workdir=tmp_path / "fs",
+        timeout=15,
+    )
+    assert fs.get("ok") is False
+    assert "sandbox filesystem deny" in (fs.get("stderr") or "") or fs.get("returncode") != 0
+
+    # Workdir-local IO must still work
+    ok = run_python_isolated(
+        code="open('local.txt','w').write('hi'); print(open('local.txt').read())",
+        workdir=tmp_path / "ok",
+        timeout=15,
+    )
+    assert ok.get("ok") is True
+    assert "hi" in (ok.get("stdout") or "")
 
 
 def test_requirements_fail_closed_without_structure(tmp_path: Path):

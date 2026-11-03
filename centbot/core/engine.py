@@ -342,10 +342,14 @@ class CentBotEngine:
             except Exception as exc:  # noqa: BLE001
                 self.journal.record("payment_check", "error", task_id=row["id"], error=str(exc))
                 continue
+            wallet = str(self.config.get("finance.crypto_wallet_public") or "").strip() or None
+            if not wallet:
+                self.journal.record("payment_check", "pending", task_id=row["id"], reason="recipient_required")
+                continue
             confirmed = confirm_payment(
                 pay if isinstance(pay, dict) else None,
                 require_tx=require_tx,
-                expected_wallet=str(self.config.get("finance.crypto_wallet_public") or "") or None,
+                expected_wallet=wallet,
                 expected_amount=float(row.get("reward_amount") or 0) or None,
                 min_confirmations=int(self.config.get("finance.min_confirmations", 1)),
                 verify_chain=bool(self.config.get("finance.verify_on_chain", True)),

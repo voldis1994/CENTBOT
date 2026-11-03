@@ -209,6 +209,13 @@ def verify_on_chain(
     }
 
 
+_ADDR_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+
+
+def is_eth_address(value: str | None) -> bool:
+    return bool(value and _ADDR_RE.match(value))
+
+
 def confirm_payment(
     pay_response: dict[str, Any] | None,
     *,
@@ -219,7 +226,7 @@ def confirm_payment(
     min_confirmations: int = 1,
     verify_chain: bool = True,
 ) -> dict[str, Any]:
-    """Settled platform status + canonical tx hash + optional on-chain match."""
+    """Settled status + tx hash + **required** recipient + optional on-chain match."""
     fields = extract_payment_fields(pay_response)
     status = str(fields.get("status") or "").lower()
     tx_hash = fields.get("tx_hash")
@@ -230,6 +237,9 @@ def confirm_payment(
         return {"ok": False, "reason": "missing_or_invalid_tx", **fields}
 
     wallet = expected_wallet or fields.get("to_address")
+    if not is_eth_address(str(wallet) if wallet else None):
+        return {"ok": False, "reason": "recipient_required", **fields, "to_address": wallet}
+
     amount = expected_amount if expected_amount is not None else fields.get("amount")
     try:
         amount_f = float(amount) if amount is not None else None
@@ -239,14 +249,14 @@ def confirm_payment(
     if verify_chain and require_tx:
         chain = verify_on_chain(
             str(tx_hash),
-            expected_to=wallet,
+            expected_to=str(wallet),
             expected_amount=amount_f,
             currency=str(fields.get("currency") or "USDC"),
             rpc_url=rpc_url,
             min_confirmations=min_confirmations,
         )
         if not chain.get("ok"):
-            return {**fields, **chain, "ok": False}
-        return {**fields, **chain, "ok": True, "reason": "confirmed"}
+            return {**fields, **chain, "ok": False, "to_address": wallet}
+        return {**fields, **chain, "ok": True, "reason": "confirmed", "to_address": wallet}
 
-    return {"ok": True, "reason": "confirmed_platform_only", **fields}
+    return {"ok": True, "reason": "confirmed_platform_only", **fields, "to_address": wallet}

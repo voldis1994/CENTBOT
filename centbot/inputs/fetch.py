@@ -88,47 +88,32 @@ def validate_url_destination(url: str, *, allow_http: bool = False) -> dict[str,
 
 
 def safe_download(url: str, dest: Path, *, timeout: float = 30.0, max_bytes: int = MAX_BYTES, allow_http: bool = False) -> dict[str, Any]:
-    """GET with redirect re-validation and size cap."""
+    """GET using DNS-validated IPs for the TCP connect (no separate rebinding window)."""
+    from centbot.inputs.pinned_http import get_pinned
+
     current = url
     for hop in range(MAX_REDIRECTS + 1):
         check = validate_url_destination(current, allow_http=allow_http)
         if not check.get("ok"):
             return {"ok": False, "error": check.get("error"), "url": current}
-        try:
-            with requests.get(
-                current,
-                timeout=timeout,
-                headers={"User-Agent": "CENTBOT/1.0"},
-                stream=True,
-                allow_redirects=False,
-            ) as resp:
-                if resp.is_redirect or resp.status_code in {301, 302, 303, 307, 308}:
-                    nxt = resp.headers.get("Location")
-                    if not nxt:
-                        return {"ok": False, "error": "redirect_without_location", "url": current}
-                    # Resolve relative redirects
-                    from urllib.parse import urljoin
-
-                    current = urljoin(current, nxt)
-                    if hop >= MAX_REDIRECTS:
-                        return {"ok": False, "error": "too_many_redirects", "url": current}
-                    continue
-                resp.raise_for_status()
-                cl = resp.headers.get("Content-Length")
-                if cl and int(cl) > max_bytes:
-                    return {"ok": False, "error": "content_too_large", "content_length": int(cl)}
-                buf = bytearray()
-                for chunk in resp.iter_content(chunk_size=64 * 1024):
-                    if not chunk:
-                        continue
-                    buf.extend(chunk)
-                    if len(buf) > max_bytes:
-                        return {"ok": False, "error": "content_too_large", "bytes": len(buf)}
-                dest.write_bytes(bytes(buf))
-                return {"ok": True, "url": current, "bytes": len(buf), "path": str(dest), "hops": hop}
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": str(exc), "url": current}
-    return {"ok": False, "error": "redirect_loop", "url": current}
+        ips = list(check.get("ips") or [])
+        result = get_pinned(current, ips, timeout=timeout, max_bytes=max_bytes, max_redirects=0)
+        if result.get("error") == "redirect":
+            current = str(result.get("location"))
+            continue
+        if not result.get("ok"):
+            return {**result, "url": current}
+        dest.write_bytes(result["content"])
+        return {
+            "ok": True,
+            "url": current,
+            "bytes": result.get("bytes"),
+            "path": str(dest),
+            "hops": hop,
+            "pinned_ip": result.get("pinned_ip"),
+            "resolved_ips": ips,
+        }
+    return {"ok": False, "error": "too_many_redirects", "url": current}
 
 
 def extract_input_urls(task: dict[str, Any]) -> list[str]:

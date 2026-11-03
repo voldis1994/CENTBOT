@@ -36,10 +36,14 @@ def test_sandbox_module_public_api(tmp_path: Path):
 
 def test_executors_reject_missing_real_inputs(tmp_path: Path):
     router = TaskExecutorRouter(browser_enabled=True, android_enabled=False)
-    for cat in ("csv", "excel", "json_xml", "pdf", "image", "programming"):
+    for cat in ("csv", "excel", "json_xml", "pdf", "image"):
         result = router.execute({"category": cat, "title": cat, "description": ""}, tmp_path / cat)
         assert result.ok is False
         assert "missing_input" in (result.error or "") or result.error == "android_runtime_unavailable"
+    # Programming without a problem statement cannot invent a solution
+    prog = router.execute({"category": "programming", "title": "x", "description": ""}, tmp_path / "programming")
+    assert prog.ok is False
+    assert prog.error in {"codegen_failed", "missing_solution_after_codegen"} or "codegen" in (prog.error or "")
 
 
 def test_executors_with_real_fixtures(tmp_path: Path):
@@ -79,8 +83,21 @@ def test_payment_requires_real_tx():
     denied = confirm_payment({"payment_status": "settled"}, require_tx=True, verify_chain=False)
     assert denied["ok"] is False
     assert denied["reason"] == "missing_or_invalid_tx"
-    ok = confirm_payment(
+    no_recipient = confirm_payment(
         {"payment_status": "settled", "payment_tx_hash": "0x" + "cd" * 32, "amount": 5, "currency": "USDC"},
+        require_tx=True,
+        verify_chain=False,
+    )
+    assert no_recipient["ok"] is False
+    assert no_recipient["reason"] == "recipient_required"
+    ok = confirm_payment(
+        {
+            "payment_status": "settled",
+            "payment_tx_hash": "0x" + "cd" * 32,
+            "amount": 5,
+            "currency": "USDC",
+            "to": "0x1111111111111111111111111111111111111111",
+        },
         require_tx=True,
         verify_chain=False,
     )
@@ -192,6 +209,7 @@ def test_claim_execute_submit_paid_flow(tmp_path: Path):
                     "payment_tx_hash": "0x" + "11" * 32,
                     "amount": 5.0,
                     "currency": "USDC",
+                    "to": "0x1111111111111111111111111111111111111111",
                 },
             }
 
@@ -229,6 +247,7 @@ def test_claim_execute_submit_paid_flow(tmp_path: Path):
                 "require_tx_hash": True,
                 "verify_on_chain": False,  # chain mocked in dedicated security tests
                 "simulate_rewards_in_dry_run": False,
+                "crypto_wallet_public": "0x1111111111111111111111111111111111111111",
             },
             "browser": {"enabled": False},
             "android": {"enabled": False},
@@ -276,3 +295,28 @@ def test_reconcile_rejects_synthetic_tx(tmp_path: Path):
     # Direct unit: confirm_payment path
     assert confirm_payment({"payment_status": "settled", "payment_tx_hash": "sim-1"}, require_tx=True)["ok"] is False
     assert ledger.total_profit() == 0
+
+
+def test_programming_codegen_produces_autonomous_solution(tmp_path: Path):
+    """Programming executor invents a solution from the task/tests (no pre-written solution.py)."""
+    from centbot.executors.programming import ProgrammingExecutor
+
+    workdir = tmp_path / "prog"
+    workdir.mkdir()
+    (workdir / "test_solution.py").write_text(
+        "from solution import merge_sorted\n"
+        "def test_merge():\n"
+        "    assert merge_sorted([1, 3], [2, 4]) == [1, 2, 3, 4]\n"
+        "    assert merge_sorted([], [1]) == [1]\n",
+        encoding="utf-8",
+    )
+    task = {
+        "category": "programming",
+        "title": "Merge sorted lists",
+        "description": "Implement merge_sorted(a, b) that merges two sorted lists.",
+    }
+    result = ProgrammingExecutor().execute(task, workdir)
+    assert result.ok, result.error
+    assert (workdir / "solution.py").exists()
+    assert "merge_sorted" in (workdir / "solution.py").read_text(encoding="utf-8")
+    assert result.output and result.output.get("codegen", {}).get("ok") is True
