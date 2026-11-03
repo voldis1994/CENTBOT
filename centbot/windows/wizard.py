@@ -17,7 +17,7 @@ except ImportError as exc:  # pragma: no cover - SETUP.bat must install deps fir
         "PyYAML missing. Re-run SETUP.bat (it installs requirements.txt before the wizard)."
     ) from exc
 
-from centbot.core.config import ROOT
+from centbot.runtime_paths import install_root
 from centbot.windows.install_state import SetupProgress
 from centbot.windows.secrets import ForbiddenSecretError, SecretStore
 
@@ -120,7 +120,7 @@ def build_local_yaml(answers: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_local_yaml(data: dict[str, Any], path: Path | None = None) -> Path:
-    path = Path(path) if path else ROOT / "config" / "local.yaml"
+    path = Path(path) if path else install_root() / "config" / "local.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return path
@@ -134,7 +134,7 @@ def apply_answers(
     allow_partial: bool = False,
 ) -> dict[str, Any]:
     """Write local.yaml only when validation passes (unless allow_partial explicitly set)."""
-    root = Path(root) if root else ROOT
+    root = Path(root) if root else install_root()
     errors: dict[str, str] = {}
 
     required_text = ["full_name", "country", "email", "bank_holder", "iban", "crypto_wallet", "mode"]

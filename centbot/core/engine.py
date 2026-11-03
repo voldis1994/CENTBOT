@@ -17,7 +17,8 @@ from centbot.ai.workers import WorkerCoordinator
 from centbot.analysis.pipeline import AnalysisPipeline, AutoAcceptor
 from centbot.android.emulator import EmulatorManager
 from centbot.core.backup import BackupManager
-from centbot.core.config import Config, ROOT
+from centbot.core.config import Config
+from centbot.runtime_paths import install_root
 from centbot.core.database import Database, utcnow
 from centbot.core.emergency import EmergencyStop
 from centbot.core.logger import ActionJournal, get_logger, setup_logging
@@ -55,7 +56,7 @@ log = get_logger("centbot.engine")
 class CentBotEngine:
     def __init__(self, config: Config):
         self.config = config
-        self.root = ROOT
+        self.root = install_root()
         log_dir = config.path_from("logging.directory", "logs")
         setup_logging(
             log_dir,
@@ -317,8 +318,15 @@ class CentBotEngine:
             }
             clean["finance"] = {k: v for k, v in clean["finance"].items() if k in fin_allow}
         path = self.config.save_local(clean)
-        self.journal.record("settings_update", "ok", path=str(path), keys=list(clean.keys()))
-        return {"ok": True, "path": str(path), "settings": self.status().get("settings")}
+        # Prove durability: path must be under install root, not PyInstaller _MEI temp
+        resolved = str(path.resolve())
+        self.journal.record("settings_update", "ok", path=resolved, keys=list(clean.keys()))
+        return {
+            "ok": True,
+            "path": resolved,
+            "persisted": path.exists(),
+            "settings": self.status().get("settings"),
+        }
 
     def status(self) -> dict[str, Any]:
         counts = {

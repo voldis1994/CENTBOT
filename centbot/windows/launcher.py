@@ -10,44 +10,57 @@ import time
 from pathlib import Path
 from typing import Any
 
-from centbot.core.config import ROOT
+from centbot.runtime_paths import install_root
 from centbot.windows.avd import AVD_NAMES, list_avds, plan_emulator_count, wait_for_boot
 
-PID_FILE = ROOT / "data" / "centbot.pid"
-STATE_FILE = ROOT / "data" / "runtime" / "launcher_state.json"
+
+def _root():
+    return install_root()
+
+
+def _pid_file():
+    return _root() / "data" / "centbot.pid"
+
+
+def _state_file():
+    return _root() / "data" / "runtime" / "launcher_state.json"
+
+
+# Back-compat aliases (evaluated at call sites via helpers below)
+PID_FILE = None  # use _pid_file()
+STATE_FILE = None
 
 
 def _write_state(data: dict[str, Any]) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    path = _state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
 
 def _read_state() -> dict[str, Any]:
-    if not STATE_FILE.exists():
+    path = _state_file()
+    if not path.exists():
         return {}
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
 
 def setup_incomplete() -> bool:
-    """Incomplete only when config/local.yaml is missing.
-
-    Docker/Android gaps must NOT block START — live engine runs so platform
-    claim errors are visible; emulator/sandbox lanes skip with warnings.
-    """
-    return not (ROOT / "config" / "local.yaml").exists()
+    """Incomplete only when durable config/local.yaml is missing (next to exe)."""
+    return not (_root() / "config" / "local.yaml").exists()
 
 
 def already_running() -> bool:
-    if not PID_FILE.exists():
+    pid_file = _pid_file()
+    if not pid_file.exists():
         return False
     try:
-        pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
     except ValueError:
         try:
-            PID_FILE.unlink(missing_ok=True)
+            pid_file.unlink(missing_ok=True)
         except OSError:
             pass
         return False
@@ -55,9 +68,8 @@ def already_running() -> bool:
         os.kill(pid, 0)
         return True
     except OSError:
-        # Stale pid file — clear so port/address is not "owned" forever
         try:
-            PID_FILE.unlink(missing_ok=True)
+            pid_file.unlink(missing_ok=True)
         except OSError:
             pass
         return False
@@ -66,7 +78,7 @@ def already_running() -> bool:
 def clear_stale_runtime() -> dict[str, Any]:
     """Drop dead pid / unlock start when previous engine crashed."""
     cleared = False
-    if PID_FILE.exists() and not already_running():
+    if _pid_file().exists() and not already_running():
         cleared = True
     return {"cleared_stale_pid": cleared, "running": already_running()}
 
@@ -169,11 +181,12 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
         return {
             "ok": False,
             "error": "already_running",
-            "pid_file": str(PID_FILE),
+            "pid_file": str(_pid_file()),
             "dashboard": url,
             "hint": "Use STOP.bat / CENTBOT.exe --stop, then start again",
         }
-    if (ROOT / "data" / "EMERGENCY_STOP").exists():
+    root = _root()
+    if (root / "data" / "EMERGENCY_STOP").exists():
         return {"ok": False, "error": "emergency_stop_active"}
 
     from centbot.core.config import Config
@@ -183,13 +196,13 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
     preferred = int(cfg.get("dashboard.port", 8787) or 8787)
     host = str(cfg.get("dashboard.host", "127.0.0.1") or "127.0.0.1")
 
-    log_dir = ROOT / "logs"
+    log_dir = root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     out_log = open(log_dir / "engine.stdout.log", "a", encoding="utf-8")  # noqa: SIM115
     err_log = open(log_dir / "engine.stderr.log", "a", encoding="utf-8")  # noqa: SIM115
 
-    # Prefer packaged exe when present (same folder as repo root)
-    exe = ROOT / "CENTBOT.exe"
+    # Prefer packaged exe when present (same folder as install root)
+    exe = root / "CENTBOT.exe"
     if exe.exists() and sys.platform.startswith("win"):
         cmd = [str(exe), "--engine"]
     else:
@@ -198,12 +211,13 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
         cmd += ["--mode", mode]
     env = os.environ.copy()
     env["CENTBOT_LAUNCHED_BY"] = "START.bat"
+    env["CENTBOT_ROOT"] = str(root)
     creationflags = 0
     if sys.platform.startswith("win"):
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     proc = subprocess.Popen(
         cmd,
-        cwd=str(ROOT),
+        cwd=str(root),
         env=env,
         stdout=out_log,
         stderr=err_log,
@@ -255,10 +269,11 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
 
 
 def stop_engine() -> dict[str, Any]:
-    result: dict[str, Any] = {"pid_file": str(PID_FILE)}
-    if PID_FILE.exists():
+    pid_file = _pid_file()
+    result: dict[str, Any] = {"pid_file": str(pid_file)}
+    if pid_file.exists():
         try:
-            pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
             if sys.platform.startswith("win"):
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
             else:
@@ -267,7 +282,7 @@ def stop_engine() -> dict[str, Any]:
         except (ValueError, OSError) as exc:
             result["error"] = str(exc)
         try:
-            PID_FILE.unlink(missing_ok=True)
+            pid_file.unlink(missing_ok=True)
         except OSError:
             pass
     # Also kill launcher-tracked engine pid if present
@@ -286,7 +301,7 @@ def stop_engine() -> dict[str, Any]:
     result["emulators"] = emu
     state["stopped_at"] = time.time()
     _write_state(state)
-    dash_state = ROOT / "data" / "runtime" / "dashboard.json"
+    dash_state = _root() / "data" / "runtime" / "dashboard.json"
     try:
         dash_state.unlink(missing_ok=True)
     except OSError:

@@ -20,17 +20,21 @@ def _freeze_root() -> Path:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     root = _freeze_root()
-    # Ensure cwd is install dir so config/data/logs resolve
-    try:
-        import os
 
+    import os
+
+    os.environ["CENTBOT_ROOT"] = str(root)
+    try:
         os.chdir(root)
     except OSError:
         pass
-
-    # Make source imports work when running unfrozen
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
+
+    # Must run before centbot.core.config / requests imports
+    from centbot.runtime_paths import bootstrap_runtime
+
+    bootstrap_runtime()
 
     if "--stop" in argv or "stop" in argv:
         from centbot.windows.launcher import stop_engine
@@ -45,7 +49,6 @@ def main(argv: list[str] | None = None) -> int:
         return setup_main(["--yes"])
 
     if "--engine" in argv:
-        # Child process: run the live engine loop (used by START / launcher)
         cleaned = [a for a in argv if a != "--engine"]
         from centbot.__main__ import main as cli_main
 
@@ -67,12 +70,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    # Default: full START (same as START.bat)
     from centbot.windows.launcher import full_start, setup_incomplete
 
     if setup_incomplete():
-        print(json.dumps({"ok": False, "error": "setup_incomplete", "hint": "Run CENTBOT.exe --setup or SETUP.bat"}, indent=2))
-        # Attempt setup then start
+        print(
+            json.dumps(
+                {"ok": False, "error": "setup_incomplete", "hint": "Run CENTBOT.exe --setup or SETUP.bat"},
+                indent=2,
+            )
+        )
         from centbot.windows.setup import main as setup_main
 
         setup_main(["--yes"])
@@ -87,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, indent=2, default=str))
     if report.get("dashboard"):
         print(f"\n[CENTBOT] Control panel: {report.get('dashboard')}")
+    local = root / "config" / "local.yaml"
+    print(f"[CENTBOT] Durable config: {local} (exists={local.exists()})")
     return 0 if report.get("ok") else 1
 
 
