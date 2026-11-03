@@ -200,12 +200,16 @@ def test_bat_files_exist():
     assert setup.find("pip install -r") < setup.find("centbot.windows.setup")
     assert ".venv" in setup
     start = (root / "START.bat").read_text(encoding="utf-8", errors="ignore")
-    assert "SETUP.bat" in start
-    assert ".venv\\Scripts\\python.exe" in start or ".venv/Scripts/python.exe" in start
-    assert "certs\\cacert.pem" in start or "certs/cacert.pem" in start
     assert "centbot.windows.start" in start
+    assert "CENTBOT_USE_EXE=0" in start
+    assert "certs\\cacert.pem" in start or "certs/cacert.pem" in start
+    assert "taskkill /IM CENTBOT.exe" in start
     stop = (root / "STOP.bat").read_text(encoding="utf-8", errors="ignore")
-    assert "centbot.windows.stop" in stop
+    assert "taskkill /IM CENTBOT.exe" in stop
+    assert (root / "FIX_NOW.bat").exists()
+    fix = (root / "FIX_NOW.bat").read_text(encoding="utf-8", errors="ignore")
+    assert "CENTBOT.exe.BROKEN_MEI_TLS" in fix
+    assert "git pull origin main" in fix
     assert (root / "CLONE_WINDOWS.bat").exists()
     clone = (root / "CLONE_WINDOWS.bat").read_text(encoding="utf-8", errors="ignore")
     assert "git clone" in clone and "config\\local.yaml" in clone
@@ -306,5 +310,4 @@ def test_exe_packaging_files_exist():
     assert "PyInstaller" in build
     start = (root / "START.bat").read_text(encoding="utf-8", errors="ignore")
     assert "centbot.windows.start" in start
-    assert "certs\\cacert.pem" in start or "certs/cacert.pem" in start
-    assert "CENTBOT_USE_EXE" in start
+    assert "CENTBOT_USE_EXE=0" in start

@@ -201,26 +201,20 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
     out_log = open(log_dir / "engine.stdout.log", "a", encoding="utf-8")  # noqa: SIM115
     err_log = open(log_dir / "engine.stderr.log", "a", encoding="utf-8")  # noqa: SIM115
 
-    # Prefer Python engine — old CENTBOT.exe without durable CA causes _MEI TLS failures.
-    # Use exe only when CENTBOT_USE_EXE=1 and certs/cacert.pem exists beside it.
-    exe = root / "CENTBOT.exe"
-    ca = root / "certs" / "cacert.pem"
-    use_exe = (
-        sys.platform.startswith("win")
-        and exe.exists()
-        and ca.is_file()
-        and os.environ.get("CENTBOT_USE_EXE", "").strip() == "1"
-    )
-    if use_exe:
-        cmd = [str(exe), "--engine"]
-    else:
-        cmd = [sys.executable, "-m", "centbot"]
+    # NEVER launch CENTBOT.exe from launcher — onefile _MEI certifi path breaks live TLS.
+    # Always Python -m centbot with durable certs/cacert.pem env.
+    from centbot.runtime_paths import bootstrap_runtime, durable_cacert_path
+
+    bootstrap_runtime()
+    ca = durable_cacert_path() or (root / "certs" / "cacert.pem")
+    cmd = [sys.executable, "-m", "centbot"]
     if mode:
         cmd += ["--mode", mode]
     env = os.environ.copy()
     env["CENTBOT_LAUNCHED_BY"] = "START.bat"
     env["CENTBOT_ROOT"] = str(root)
-    if ca.is_file():
+    env["CENTBOT_USE_EXE"] = "0"
+    if ca and Path(ca).is_file():
         env["SSL_CERT_FILE"] = str(ca)
         env["REQUESTS_CA_BUNDLE"] = str(ca)
         env["CURL_CA_BUNDLE"] = str(ca)

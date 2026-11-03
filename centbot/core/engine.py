@@ -898,6 +898,20 @@ class CentBotEngine:
         return summary
 
     def run_forever(self) -> None:
+        from centbot.runtime_paths import bootstrap_runtime, ssl_verify_path
+
+        bootstrap_runtime()
+        verify = ssl_verify_path()
+        if isinstance(verify, str) and "_MEI" in verify.replace("\\", "/"):
+            log.error("TLS still pointing at PyInstaller temp (%s) — delete CENTBOT.exe and use START.bat/FIX_NOW.bat", verify)
+            self.db.add_alert(
+                "critical",
+                "TLS CA is _MEI temp path — run FIX_NOW.bat (kill CENTBOT.exe, use Python)",
+                source="tls",
+            )
+        elif isinstance(verify, str):
+            log.info("TLS CA bundle: %s", verify)
+
         self._running = True
         pid_path = self.config.path_from("system.pid_file", "data/centbot.pid")
         pid_path.parent.mkdir(parents=True, exist_ok=True)
