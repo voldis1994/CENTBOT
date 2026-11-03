@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import time
 import traceback
@@ -113,21 +114,38 @@ class CentBotEngine:
             emulator_path=str(config.get("android.emulator_path") or _sdk_early.get("emulator") or "emulator"),
         )
         self.repair = ErrorRepair(max_attempts=2)
-        if not sandbox_available():
-            # Windows often has no Docker — PC live claims still work with restrictor fallback
-            msg = (
-                "sandbox: Docker/Podman nav — PC lane lieto userspace restrictor "
-                "(CENTBOT_REQUIRE_CONTAINER=0). Instalē Docker, ja vajag stingru izolāciju."
-            )
+        from centbot.sandbox.isolated import sandbox_diagnose
+
+        sand = sandbox_diagnose()
+        if sand.get("ok"):
+            self.journal.record("sandbox", "ok", available=True, backend=sand.get("selected"))
+            os.environ.setdefault("CENTBOT_REQUIRE_CONTAINER", "1")
+        else:
+            # Docker may be installed but daemon/image not ready — say so honestly
+            msg = str(sand.get("hint_lv") or sand.get("error") or "sandbox unavailable")
+            level = "warning"
+            if sand.get("docker_on_path"):
+                level = "warning"
+                msg = f"sandbox: Docker ir, bet nav gatavs — {msg}"
+            else:
+                msg = (
+                    "sandbox: Docker/Podman nav PATH — PC lane lieto restrictor. "
+                    "Ja Docker Desktop ir instalēts: palaid Engine, jaunu CMD, tad "
+                    "python -m centbot.windows.docker_sandbox"
+                )
             existing = self.db.fetchone(
                 "SELECT id FROM alerts WHERE acknowledged=0 AND source=? AND message=? LIMIT 1",
                 ("sandbox", msg),
             )
             if not existing:
-                self.db.add_alert("warning", msg, source="sandbox")
-            self.journal.record("sandbox", "warn", available=False, backend="restrictor_fallback")
-        else:
-            self.journal.record("sandbox", "ok", available=True)
+                self.db.add_alert(level, msg, source="sandbox")
+            self.journal.record(
+                "sandbox",
+                "warn",
+                available=False,
+                docker_on_path=sand.get("docker_on_path"),
+                error=sand.get("error"),
+            )
         try:
             refresh_rates(force=True)
         except Exception as exc:  # noqa: BLE001

@@ -139,6 +139,10 @@ def run_in_docker(
 
     image = os.environ.get("CENTBOT_SANDBOX_IMAGE", "python:3.12-slim")
     rel_launcher = launcher.resolve().relative_to(workdir.resolve())
+    # Docker Desktop on Windows needs forward-slash host paths for -v
+    host_work = str(workdir.resolve())
+    if sys.platform.startswith("win"):
+        host_work = host_work.replace("\\", "/")
     cmd = [
         path,
         "run",
@@ -158,7 +162,7 @@ def run_in_docker(
         "--cpus",
         "1",
         "-v",
-        f"{workdir.resolve()}:/work:rw",
+        f"{host_work}:/work:rw",
         "-w",
         "/work",
         "-e",

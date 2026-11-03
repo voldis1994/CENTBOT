@@ -180,22 +180,73 @@ def isolate_file(src: Path, sandbox_root: Path) -> Path:
 
 def sandbox_available() -> bool:
     """Health check: container backend runs print and blocks network."""
+    return bool(sandbox_diagnose().get("ok"))
+
+
+def sandbox_diagnose() -> dict[str, Any]:
+    """Detailed sandbox readiness (used by engine alerts + Windows Docker helper)."""
     backends = _container.available_backends()
+    selected = _container.select_backend()
+    out: dict[str, Any] = {
+        "ok": False,
+        "selected": selected,
+        "available": backends,
+        "docker_on_path": bool(backends.get("docker") or backends.get("podman")),
+    }
     if not (backends.get("docker") or backends.get("podman") or backends.get("unshare_container")):
-        return False
-    result = run_python_isolated(code="print('centbot-sandbox-ok')", timeout=20)
+        out["error"] = "no_container_backend"
+        out["hint_lv"] = "Docker/Podman nav PATH. Palaid Docker Desktop un jaunu CMD."
+        return out
+    # Prefer requiring container for the probe even if START set REQUIRE=0
+    old = os.environ.get("CENTBOT_REQUIRE_CONTAINER")
+    os.environ["CENTBOT_REQUIRE_CONTAINER"] = "1"
+    try:
+        result = run_python_isolated(code="print('centbot-sandbox-ok')", timeout=60, require_container=True)
+    finally:
+        if old is None:
+            os.environ.pop("CENTBOT_REQUIRE_CONTAINER", None)
+        else:
+            os.environ["CENTBOT_REQUIRE_CONTAINER"] = old
+    out["probe"] = {
+        "ok": result.get("ok"),
+        "container": result.get("container"),
+        "backend": result.get("backend"),
+        "error": result.get("error"),
+        "stderr": (result.get("stderr") or "")[:300],
+    }
     if not (result.get("ok") and "centbot-sandbox-ok" in (result.get("stdout") or "")):
-        return False
+        out["error"] = result.get("error") or "probe_failed"
+        if out["docker_on_path"]:
+            out["hint_lv"] = (
+                "Docker ir instalēts, bet sandbox run neizdevās — "
+                "pārliecinies, ka Docker Desktop Engine ir Running, tad palaid: "
+                "python -m centbot.windows.docker_sandbox"
+            )
+        else:
+            out["hint_lv"] = "Konteinera backend nav pieejams."
+        return out
     if not result.get("container"):
-        return False
-    net = run_python_isolated(code="import socket", timeout=20)
+        out["error"] = "not_containerized"
+        out["hint_lv"] = "Sandbox nestrādā konteinerī."
+        return out
+    net = run_python_isolated(code="import socket", timeout=30, require_container=True)
+    out["network_blocked"] = not bool(net.get("ok"))
     if net.get("ok"):
-        return False
-    return True
+        out["error"] = "network_not_blocked"
+        out["hint_lv"] = "Sandbox nebloķē tīklu."
+        return out
+    out["ok"] = True
+    out["hint_lv"] = f"Sandbox OK ({result.get('backend')})"
+    return out
 
 
 def sandbox_backend_info() -> dict[str, Any]:
+    diag = sandbox_diagnose()
     return {
-        "selected": _container.select_backend(),
-        "available": _container.available_backends(),
+        "selected": diag.get("selected") or _container.select_backend(),
+        "available": diag.get("available") or _container.available_backends(),
+        "ok": bool(diag.get("ok")),
+        "error": diag.get("error"),
+        "hint_lv": diag.get("hint_lv"),
+        "docker_on_path": diag.get("docker_on_path"),
     }
