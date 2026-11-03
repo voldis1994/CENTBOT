@@ -60,13 +60,26 @@ if not exist backups mkdir backups
 if not exist sandbox mkdir sandbox
 if not exist data\runtime mkdir data\runtime
 
+REM Prefer packaged exe when present
+if exist "%~dp0CENTBOT.exe" (
+  echo [CENTBOT] Starting LIVE via CENTBOT.exe ...
+  "%~dp0CENTBOT.exe"
+  set "EC=%ERRORLEVEL%"
+  goto :done
+)
+
 echo [CENTBOT] Starting LIVE system via launcher...
 "%PY%" -m centbot.windows.start
 set "EC=%ERRORLEVEL%"
+
+:done
 if "%EC%"=="0" (
-  echo [CENTBOT] Started. Control panel: http://127.0.0.1:8787/
+  echo [CENTBOT] Started. Open the URL printed above ^(port auto-bumps if 8787 is busy^).
+  echo           If the page fails: STOP.bat then START.bat again; see logs\engine.stderr.log
 ) else (
   echo [CENTBOT] Start failed with code %EC%
+  echo           If "address already in use": run STOP.bat, then START.bat
+  echo           Or open http://127.0.0.1:8788/ if port was bumped — see data\runtime\dashboard.json
 )
 ENDLOCAL
 exit /b %EC%

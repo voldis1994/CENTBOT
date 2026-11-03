@@ -102,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(engine.status(), indent=2, default=str))
         return 0
     if args.dashboard_only:
-        from centbot.dashboard.app import create_dashboard, start_dashboard_thread
+        from centbot.dashboard.app import create_dashboard, read_dashboard_state, start_dashboard_thread
+        from centbot.dashboard.portutil import wait_for_port
 
         host = str(config.get("dashboard.host", "127.0.0.1"))
         port = int(config.get("dashboard.port", 8787))
@@ -117,7 +118,21 @@ def main(argv: list[str] | None = None) -> int:
         engine.monitor.snapshot()
         engine._last_snapshot = engine.monitor.snapshot().to_dict()
         start_dashboard_thread(app, bind, port)
-        print(json.dumps({"ok": True, "dashboard": f"http://{bind}:{port}/", "mode": config.get("system.mode")}, indent=2))
+        state = read_dashboard_state()
+        actual = int(state.get("port") or port)
+        wait_for_port("127.0.0.1", actual, timeout_s=10)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "dashboard": state.get("url") or f"http://127.0.0.1:{actual}/",
+                    "port": actual,
+                    "bumped": bool(state.get("bumped")),
+                    "mode": config.get("system.mode"),
+                },
+                indent=2,
+            )
+        )
         try:
             import time
 

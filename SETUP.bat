@@ -118,7 +118,8 @@ if exist "config\local.yaml" if "%WIZ_EC%"=="0" (
   echo [CENTBOT] Config OK: config\local.yaml
 )
 if "%EC%"=="0" (
-  echo [CENTBOT] SETUP finished. Next: START.bat
+  echo [CENTBOT] SETUP finished.
+  echo           Next: START.bat   or build exe: BUILD_EXE.bat then double-click CENTBOT.exe
 ) else (
   echo [CENTBOT] SETUP finished with issues ^(exit %EC%^). Re-run SETUP.bat to resume.
 )
