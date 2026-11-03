@@ -211,8 +211,10 @@ def test_bank_vs_crypto_ledger_and_duplicates(tmp_path: Path):
 def test_engine_reconcile_routes_bank_to_bank_ledger(tmp_path: Path):
     from centbot.finance.bank_providers import StaticBankProvider
 
-    engine = _engine(tmp_path, mode="dry_run", auto_accept=False)
+    # Reconcile only books in intentional live mode (dry_run never invents income)
+    engine = _engine(tmp_path, mode="live", auto_accept=False)
     engine.config.set("finance.bank_iban", "DE89370400440532013000")
+    engine.config.set("finance.crypto_wallet_public", "0x" + "11" * 20)
     engine._bank_provider = StaticBankProvider(
         {
             "SEPA-ENG-1": {

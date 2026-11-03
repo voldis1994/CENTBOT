@@ -14,25 +14,32 @@ from centbot.core.engine import CentBotEngine
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="CENTBOT autonomous workstation (live platforms)")
     p.add_argument("--config", default="config/default.yaml", help="Path to YAML config")
-    p.add_argument("--once", action="store_true", help="Run a single live discovery/execute cycle and exit")
+    p.add_argument("--once", action="store_true", help="Run a single discovery/execute cycle and exit")
     p.add_argument(
         "--demo",
         action="store_true",
-        help="Live feed trial: discover real tasks, optional local execute, no claims",
+        help="Controlled discovery trial (forces dry_run; no claims/submits/payments)",
     )
     p.add_argument(
         "--controlled-live",
         action="store_true",
-        help="Controlled real-platform test — ALWAYS dry_run; blocks accept/submit/payment booking",
+        help="Explicit test harness: ALWAYS dry_run; blocks accept/submit/payment booking",
     )
     p.add_argument("--discover", action="store_true", help="Fetch and analyze live tasks only")
     p.add_argument("--status", action="store_true", help="Print status JSON and exit")
+    p.add_argument("--live-status", action="store_true", help="Print live readiness blockers and exit")
+    p.add_argument("--ops-report", action="store_true", help="Write/print operations evidence report")
     p.add_argument("--integrations", action="store_true", help="Verify live platform integrations")
     p.add_argument("--mode", choices=["dry_run", "live"], help="Override system.mode")
     p.add_argument(
         "--evidence-out",
         default="data/controlled-live-evidence.json",
         help="Evidence path for --controlled-live",
+    )
+    p.add_argument(
+        "--ops-out",
+        default="data/ops/operations-report.json",
+        help="Path for --ops-report",
     )
     p.add_argument(
         "--register-basedagents",
@@ -53,8 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode:
         overrides["system"] = {"mode": args.mode}
 
-    # --controlled-live ALWAYS wins over config and --mode live
-    if args.controlled_live:
+    # ONLY --controlled-live / --demo may force dry_run over an intentional live config
+    if args.controlled_live or args.demo:
         overrides = {
             **overrides,
             "system": {**(overrides.get("system") or {}), "mode": "dry_run"},
@@ -88,24 +95,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.status:
         print(json.dumps(engine.status(), indent=2, default=str))
         return 0
+    if args.live_status:
+        print(json.dumps(engine.live_readiness(), indent=2, default=str))
+        engine.shutdown()
+        return 0 if engine.live_readiness().get("ready") or not config.is_live() else 1
+    if args.ops_report:
+        from centbot.quality.ops_report import write_operations_report
+
+        report = engine.operations_report()
+        out = write_operations_report(Path(args.ops_out), report)
+        print(json.dumps({"evidence": str(out), "verified_success": report.get("verified_success"), "finances": report.get("finances")}, indent=2, default=str))
+        engine.shutdown()
+        return 0
     if args.integrations:
         print(json.dumps(engine.integration_report(), indent=2, default=str))
         return 0
     if args.discover:
         analyzed = engine.discover_and_analyze()
-        print(json.dumps({"discovered": len(analyzed), "eligible": sum(1 for t in analyzed if t.get("status") == "eligible"), "tasks": [
+        print(json.dumps({"discovered": len(analyzed), "eligible": sum(1 for t in analyzed if t.get("status") == "eligible"), "mode": config.get("system.mode"), "tasks": [
             {"platform": t["platform"], "title": t.get("title"), "reward": t.get("reward_amount"), "currency": t.get("reward_currency"), "status": t.get("status")}
             for t in analyzed[:30]
         ]}, indent=2, default=str))
         engine.shutdown()
         return 0
-    if args.demo:
-        report = engine.run_live_trial(execute_local=True, controlled=True)
-        print(json.dumps(report, indent=2, default=str))
-        engine.shutdown()
-        return 0
-    if args.controlled_live:
-        # Belt-and-suspenders: force controlled even if YAML had mode: live
+    if args.demo or args.controlled_live:
         engine.enter_controlled_mode()
         report = engine.run_live_trial(execute_local=True, controlled=True)
         evidence = {
@@ -134,10 +147,23 @@ def main(argv: list[str] | None = None) -> int:
         ok = bool((evidence.get("verification") or {}).get("live_discovery")) and evidence.get("mode") == "dry_run"
         return 0 if ok else 1
     if args.once:
+        if config.is_live():
+            readiness = engine.live_readiness()
+            if not readiness.get("ready"):
+                print(json.dumps({"ok": False, "reason": "live_not_ready", "readiness": readiness}, indent=2, default=str))
+                engine.shutdown()
+                return 2
         summary = engine.cycle_once()
         print(json.dumps(summary, indent=2, default=str))
         engine.shutdown()
         return 0 if summary.get("ok") else 1
+
+    if config.is_live():
+        readiness = engine.live_readiness()
+        if not readiness.get("ready"):
+            print(json.dumps({"ok": False, "reason": "live_not_ready", "readiness": readiness}, indent=2, default=str))
+            engine.shutdown()
+            return 2
 
     engine.run_forever()
     return 0

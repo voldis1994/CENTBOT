@@ -230,7 +230,8 @@ def test_engine_reconcile_bank_and_crypto_rails(tmp_path: Path):
     cfg = Config(
         overrides={
             "system": {
-                "mode": "dry_run",
+                # Intentional live: reconcile books only after independent verification
+                "mode": "live",
                 "pid_file": str(tmp_path / "data" / "pid"),
                 "emergency_stop_file": str(tmp_path / "data" / "STOP"),
             },

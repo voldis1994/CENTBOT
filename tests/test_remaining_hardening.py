@@ -262,7 +262,7 @@ def test_controlled_live_trial_report(tmp_path: Path):
         }
     )
     engine = CentBotEngine(cfg)
-    report = engine.run_live_trial(execute_local=False)
+    report = engine.run_live_trial(execute_local=False, controlled=True)
     engine.shutdown()
     assert report["controlled"] is True
     assert report["claims_allowed"] is False

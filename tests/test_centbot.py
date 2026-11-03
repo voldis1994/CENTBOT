@@ -207,11 +207,16 @@ def test_platform_integrations_live():
 
 
 def test_live_trial_pipeline(tmp_engine: CentBotEngine):
-    report = tmp_engine.run_live_trial(execute_local=True)
+    # Explicit controlled practice — must not silently claim on live platforms
+    report = tmp_engine.run_live_trial(execute_local=True, controlled=True)
     assert report["discovered"] >= 1
+    assert report["controlled"] is True
+    assert report["claims_allowed"] is False
+    assert report["mode"] == "dry_run"
     # Eligible depends on live market quality; discovery itself must be real
     assert isinstance(report["samples"], list)
     assert report["integrations"]["jobbi"]["ok"] or report["integrations"]["basedagents"]["ok"]
+    assert report["verification"]["reward_received"] is False
     tmp_engine.shutdown()
 
 

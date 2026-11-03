@@ -123,8 +123,9 @@ class HttpClient:
     def post_json(self, path: str, json_body: Any = None, **kwargs: Any) -> Any:
         resp = self.request("POST", path, json_body=json_body, **kwargs)
         if not resp.content:
-            return {"ok": True, "status": resp.status_code}
+            # HTTP 2xx with empty body is not business success — callers must not assume ok
+            return {"ok": False, "error": "empty_body", "status": resp.status_code}
         try:
             return resp.json()
         except Exception:
-            return {"ok": True, "status": resp.status_code, "text": resp.text[:2000]}
+            return {"ok": False, "error": "non_json_body", "status": resp.status_code, "text": resp.text[:2000]}

@@ -103,7 +103,10 @@ class TaskMarketConnector(PlatformConnector):
         body = {"workerAddress": self.wallet.address, "signature": sig}
         try:
             result = self.client.post_json(f"/api/tasks/{task.external_id}/claim", body, headers=self._caller_headers())
-            return {"ok": bool(result.get("success", True)), "result": result, "external_id": task.external_id}
+            from centbot.platforms.response import interpret_platform_result
+
+            interpreted = interpret_platform_result(result, action="claim")
+            return {**interpreted, "external_id": task.external_id}
         except PlatformHTTPError as exc:
             return {"ok": False, "error": str(exc), "status": exc.status, "body": exc.body}
 
@@ -134,7 +137,12 @@ class TaskMarketConnector(PlatformConnector):
                 body,
                 headers=self._caller_headers(),
             )
-            return {"ok": bool(result.get("success", True)), "status": "submitted", "result": result}
+            from centbot.platforms.response import interpret_platform_result
+
+            interpreted = interpret_platform_result(result, action="submit")
+            if interpreted.get("ok"):
+                interpreted["status"] = "submitted"
+            return interpreted
         except PlatformHTTPError as exc:
             return {"ok": False, "error": str(exc), "status": exc.status, "body": exc.body}
 

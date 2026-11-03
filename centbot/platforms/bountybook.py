@@ -93,8 +93,11 @@ class BountyBookConnector(PlatformConnector):
         addr = self.wallet.address if self.wallet else None
         body = {"agentAddress": addr, "executorAddress": addr}
         try:
+            from centbot.platforms.response import interpret_platform_result
+
             result = self.client.post_json(f"/jobs/{task.external_id}/claim", body, headers=self._auth_headers())
-            return {"ok": True, "result": result, "external_id": task.external_id}
+            interpreted = interpret_platform_result(result, action="claim")
+            return {**interpreted, "external_id": task.external_id}
         except PlatformHTTPError as exc:
             return {"ok": False, "error": str(exc), "status": exc.status, "body": exc.body}
 
@@ -107,13 +110,19 @@ class BountyBookConnector(PlatformConnector):
             "outputData": payload.get("output") or payload.get("outputData") or payload,
         }
         try:
+            from centbot.platforms.response import interpret_platform_result
+
             result = self.client.post_json(f"/jobs/{task.external_id}/submit", body, headers=self._auth_headers())
-            passed = None
             if isinstance(result, dict):
                 passed = (result.get("verification_result") or result.get("verification") or {}).get("passed")
                 if passed is None:
                     passed = result.get("passed")
-            return {"ok": True if passed is None else bool(passed), "status": "submitted", "result": result}
+                if passed is False:
+                    return {"ok": False, "error": "verification_failed", "status": "rejected", "result": result}
+            interpreted = interpret_platform_result(result, action="submit")
+            if interpreted.get("ok"):
+                interpreted["status"] = "submitted"
+            return interpreted
         except PlatformHTTPError as exc:
             return {"ok": False, "error": str(exc), "status": exc.status, "body": exc.body}
 

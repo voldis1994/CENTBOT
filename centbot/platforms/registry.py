@@ -64,16 +64,23 @@ class ExtraRewardSource(PlatformConnector):
         return out
 
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
+        from centbot.platforms.response import interpret_platform_result
+
         path = str(self.config.get("claim_path") or f"/tasks/{task.external_id}/claim")
         path = path.replace("{id}", task.external_id)
         result = self.client.post_json(path, {}, headers=self.headers or None)
-        return {"ok": True, "result": result}
+        return {**interpret_platform_result(result, action="claim"), "external_id": task.external_id}
 
     def submit_result(self, task: PlatformTask, payload: dict[str, Any]) -> dict[str, Any]:
+        from centbot.platforms.response import interpret_platform_result
+
         path = str(self.config.get("submit_path") or f"/tasks/{task.external_id}/submit")
         path = path.replace("{id}", task.external_id)
         result = self.client.post_json(path, payload, headers=self.headers or None)
-        return {"ok": True, "status": "submitted", "result": result}
+        interpreted = interpret_platform_result(result, action="submit")
+        if interpreted.get("ok"):
+            interpreted["status"] = "submitted"
+        return interpreted
 
 
 def build_platforms(
@@ -117,8 +124,10 @@ def verify_integrations(platforms: dict[str, PlatformConnector]) -> dict[str, An
         try:
             tasks = conn.list_tasks()
             entry["sample_task_count"] = len(tasks)
+            # Reachable API ≠ market success; ok means discovery worked without error
             entry["ok"] = True
             entry["live"] = True
+            entry["discovery_only"] = len(tasks) == 0
             if tasks:
                 entry["sample"] = {
                     "id": tasks[0].external_id,
@@ -126,9 +135,12 @@ def verify_integrations(platforms: dict[str, PlatformConnector]) -> dict[str, An
                     "reward": tasks[0].reward_amount,
                     "currency": tasks[0].reward_currency,
                 }
+            else:
+                entry["note"] = "API reachable but returned zero open tasks"
         except Exception as exc:  # noqa: BLE001
             entry["ok"] = False
             entry["live"] = False
             entry["error"] = str(exc)
         report[name] = entry
     return report
+

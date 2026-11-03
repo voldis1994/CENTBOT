@@ -153,9 +153,18 @@ class CentBotEngine:
             self._bank_provider = HttpBankProvider(bank_base, api_key=bank_key)
         self._register_default_workers()
         self._ensure_platform_stats()
+        # Refuse simulated rewards in any mode — income must be independently verified
+        if bool(self.config.get("finance.simulate_rewards_in_dry_run", False)):
+            self.config.set("finance.simulate_rewards_in_dry_run", False)
+            self.journal.record("config", "sanitized", field="simulate_rewards_in_dry_run", value=False)
+            self.db.add_alert("warning", "simulate_rewards_in_dry_run forced off — no synthetic income", source="finance")
 
     def enter_controlled_mode(self) -> None:
-        """Force dry_run and block all real accept/submit/payment booking side effects."""
+        """Force dry_run and block all real accept/submit/payment booking side effects.
+
+        Only for explicit ``--controlled-live`` / test harnesses — never used by
+        normal ``run_forever`` / ``--once`` when the user chose live mode.
+        """
         self.config.force_dry_run()
         self.config.set("analysis.auto_accept", False)
         self.config.set("finance.reconcile_payments", False)
@@ -163,6 +172,45 @@ class CentBotEngine:
         self.submitter.dry_run = True
         self._controlled_mode = True
         self.journal.record("controlled_mode", "enabled", mode="dry_run", claims_allowed=False)
+
+    def live_readiness(self) -> dict[str, Any]:
+        """Honest gate: what is missing before real claims/submits/payments can succeed."""
+        live = self.config.is_live()
+        blockers: list[str] = []
+        if not live:
+            blockers.append("system.mode_not_live")
+        if not bool(self.config.get("analysis.auto_accept", False)):
+            blockers.append("analysis.auto_accept_disabled")
+        if self._controlled_mode:
+            blockers.append("controlled_mode_active")
+        if self.acceptor.dry_run or self.submitter.dry_run:
+            blockers.append("acceptor_or_submitter_dry_run")
+        wallet = str(self.config.get("finance.crypto_wallet_public") or "").strip()
+        if not wallet:
+            blockers.append("finance.crypto_wallet_public_missing")
+        if bool(self.config.get("finance.simulate_rewards_in_dry_run", False)):
+            blockers.append("simulate_rewards_forbidden")
+        integrations = self.integration_report()
+        claimable = []
+        for name, info in integrations.items():
+            if not info.get("ok"):
+                continue
+            rules = info.get("automation") or {}
+            if rules.get("automation_allowed") is False:
+                continue
+            claimable.append(name)
+        if live and not claimable:
+            blockers.append("no_claimable_live_platform")
+        return {
+            "live": live,
+            "ready": live and not blockers and bool(claimable),
+            "blockers": blockers,
+            "claimable_platforms": claimable,
+            "auto_accept": bool(self.config.get("analysis.auto_accept", False)),
+            "verify_on_chain": bool(self.config.get("finance.verify_on_chain", True)),
+            "bank_provider_configured": self._bank_provider is not None,
+            "bank_iban_set": bool(str(self.config.get("finance.bank_iban") or "").strip()),
+        }
 
     def _register_default_workers(self) -> None:
         self.workers.register("system", lambda ctx: {"ok": True})
@@ -224,6 +272,18 @@ class CentBotEngine:
         if not self.rate_limiter.allow():
             self.journal.record("discover", "rate_limited")
             return []
+        # Probe configured extra boards (never invent catalogs)
+        try:
+            from centbot.discovery.new_platforms import scout_configured_extras
+
+            for scout in scout_configured_extras(self.config):
+                self.journal.record(
+                    "platform_scout",
+                    "ok" if scout.get("ok") else "error",
+                    **{k: v for k, v in scout.items() if k != "item"},
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.journal.record("platform_scout", "error", error=str(exc))
         raw = self.scanner.scan()
         known = {r["fingerprint"] for r in self.db.fetchall("SELECT fingerprint FROM tasks WHERE fingerprint IS NOT NULL")}
         unique = self.dedup.filter(raw, known)
@@ -327,36 +387,96 @@ class CentBotEngine:
             task_obj = task_row.get("_task") or task_from_row(task_row)
             submit_row = {**task_row, "_task": task_obj}
             submit_result = self.submitter.submit(submit_row, submit_payload)
-            if submit_result.get("ok") and not self.config.is_dry_run():
+            submit_mode = submit_result.get("mode")
+            platform_submit_ok = bool(submit_result.get("ok")) and submit_mode != "dry_run"
+            if submit_mode == "dry_run":
+                self.journal.record("submit_result", "dry_run", task_id=task_id, result=submit_result)
+                self.db.execute(
+                    "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
+                    ("dry_run_completed", utcnow(), task_id),
+                )
+                final_ok = bool(outcome.get("ok"))
+            elif platform_submit_ok:
                 self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("submitted", utcnow(), task_id))
-            self.journal.record("submit_result", "ok" if submit_result.get("ok") else "pending", task_id=task_id, result=submit_result)
+                self.journal.record("submit_result", "ok", task_id=task_id, result=submit_result)
+                final_ok = True
+            else:
+                # Local work may be done, but platform submit failed — do not claim platform success
+                self.journal.record("submit_result", "error", task_id=task_id, result=submit_result)
+                final_ok = False if self.config.is_live() else bool(outcome.get("ok"))
+                if self.config.is_live():
+                    self.db.execute(
+                        "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
+                        ("submit_failed", utcnow(), task_id),
+                    )
+            self.journal.record(
+                "execute",
+                "ok" if final_ok else "failed",
+                task_id=task_id,
+                evidence=str(evidence),
+                platform_submit_ok=platform_submit_ok,
+                mode=self.config.get("system.mode"),
+            )
+            return {
+                "ok": final_ok,
+                "task_id": task_id,
+                "evidence": str(evidence),
+                "inputs": inputs,
+                "submit": submit_result,
+                "local_execution_ok": bool(outcome.get("ok")),
+                "platform_submit_ok": platform_submit_ok,
+            }
         else:
             self.optimizer.learn_from_reward(task_row["platform"], False)
             self.rejection_repair.handle(task_id, reason=str(outcome.get("error") or "failed"))
         self.journal.record("execute", status, task_id=task_id, evidence=str(evidence))
-        return {"ok": ok, "task_id": task_id, "evidence": str(evidence), "inputs": inputs}
+        return {"ok": ok, "task_id": task_id, "evidence": str(evidence), "inputs": inputs, "local_execution_ok": ok}
 
     def schedule_eligible(self) -> int:
         from centbot.platforms.hydrate import task_from_row
 
-        rows = self.db.fetchall("SELECT * FROM tasks WHERE status IN ('eligible','accepted','needs_repair') ORDER BY priority DESC")
+        # Live never schedules dry_run_accepted rows as if they were claimed
+        if self.config.is_live() and not self._controlled_mode:
+            statuses = ("eligible", "accepted", "needs_repair")
+        else:
+            statuses = ("eligible", "accepted", "dry_run_accepted", "needs_repair")
+        rows = self.db.fetchall(
+            f"SELECT * FROM tasks WHERE status IN ({','.join('?' for _ in statuses)}) ORDER BY priority DESC",
+            statuses,
+        )
         launched = 0
         for row in sort_by_priority(rows):
             if not self.pool.has_capacity():
                 break
             if self.emergency.is_active():
                 break
+            # Skip dry-run practice rows when operating live
+            if self.config.is_live() and str(row.get("status") or "").startswith("dry_run"):
+                continue
             task_obj = task_from_row(row)
             row = {**row, "_task": task_obj}
             if row["status"] == "eligible":
                 if self._controlled_mode or self.config.is_dry_run():
-                    # Local practice / controlled: mark accepted without calling platform claim APIs
-                    self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
-                    row["status"] = "accepted"
+                    # Local practice only — never confuse with a real platform claim
+                    self.db.execute(
+                        "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
+                        ("dry_run_accepted", utcnow(), row["id"]),
+                    )
+                    row["status"] = "dry_run_accepted"
                 else:
+                    readiness = self.live_readiness()
+                    if not readiness.get("ready"):
+                        self.journal.record(
+                            "accept",
+                            "blocked",
+                            task_id=row["id"],
+                            blockers=readiness.get("blockers"),
+                        )
+                        continue
                     accept = self.acceptor.accept({**row, "status": "eligible", "_task": task_obj})
-                    if not accept.get("ok"):
+                    if not accept.get("ok") or accept.get("mode") == "dry_run":
                         self.journal.record("accept", "skipped", task_id=row["id"], result=accept)
+                        # Skip to next suitable task instead of faking success
                         continue
                     self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
                     self.ledger.update_platform_stats(row["platform"], accepted=1)
@@ -370,12 +490,16 @@ class CentBotEngine:
         if self._controlled_mode:
             self.journal.record("payment_check", "blocked_controlled")
             return []
+        if self.config.is_dry_run():
+            self.journal.record("payment_check", "blocked_dry_run")
+            return []
         if not self.config.get("finance.reconcile_payments", True):
             return []
         require_tx = bool(self.config.get("finance.require_tx_hash", True))
         updates: list[dict[str, Any]] = []
         pending = self.db.fetchall(
-            "SELECT * FROM tasks WHERE status IN ('completed','submitted','verified') ORDER BY updated_at DESC LIMIT 40"
+            "SELECT * FROM tasks WHERE status IN ('submitted','verified') "
+            "AND status NOT LIKE 'dry_run%' ORDER BY updated_at DESC LIMIT 40"
         )
         expected_iban = str(self.config.get("finance.bank_iban") or "").strip() or None
         for row in pending:
@@ -478,6 +602,7 @@ class CentBotEngine:
             self.db.add_alert("warning", msg, source="monitor")
             self.journal.record("monitor_warning", "warn", message=msg)
 
+        readiness = self.live_readiness() if self.config.is_live() else {"live": False, "ready": False}
         analyzed = self.discover_and_analyze()
         launched = self.schedule_eligible()
         submission_updates = self.status_checker.poll_pending()
@@ -490,6 +615,7 @@ class CentBotEngine:
 
         self._cycles += 1
         self.db.set_state("cycles", self._cycles)
+        balances = self.ledger.balances()
         summary = {
             "ok": True,
             "cycle": self._cycles,
@@ -497,11 +623,31 @@ class CentBotEngine:
             "launched": launched,
             "submissions": len(submission_updates),
             "payments": len(payments),
-            "profit": self.ledger.total_profit(),
+            "profit": balances.get("profit"),
+            "bank_balance": balances.get("bank"),
+            "crypto_balance": balances.get("crypto"),
             "active_workers": self.pool.active_count(),
             "mode": self.config.get("system.mode"),
+            "live_ready": readiness.get("ready"),
+            "live_blockers": readiness.get("blockers") if self.config.is_live() else [],
+            "controlled": self._controlled_mode,
         }
-        self.journal.record("cycle", "ok", **summary)
+        # Persist evidence snapshot each cycle (facts only)
+        try:
+            from centbot.quality.ops_report import build_operations_report, write_operations_report
+
+            report = build_operations_report(
+                db=self.db,
+                ledger=self.ledger,
+                journal_dir=self.config.path_from("logging.directory", "logs"),
+                mode=str(self.config.get("system.mode")),
+                live=self.config.is_live() and not self._controlled_mode,
+            )
+            report["cycle"] = summary
+            write_operations_report(self.root / "data" / "ops" / "operations-report.json", report)
+        except Exception as exc:  # noqa: BLE001
+            self.journal.record("ops_report", "error", error=str(exc))
+        self.journal.record("cycle", "ok", **{k: v for k, v in summary.items() if k != "live_blockers"})
         return summary
 
     def run_forever(self) -> None:
@@ -536,15 +682,15 @@ class CentBotEngine:
             self.shutdown()
 
     def run_demo_pipeline(self) -> dict[str, Any]:
-        """Live discovery trial: fetch real gigs, analyze, optionally execute locally without claims."""
-        return self.run_live_trial(execute_local=True)
+        """Controlled discovery trial: real feeds + local practice; never claims/submits/payments."""
+        return self.run_live_trial(execute_local=True, controlled=True)
 
-    def run_live_trial(self, *, execute_local: bool = True, controlled: bool = True) -> dict[str, Any]:
+    def run_live_trial(self, *, execute_local: bool = True, controlled: bool = False) -> dict[str, Any]:
         """Pull real platform feeds and optionally practice-execute locally.
 
-        When ``controlled=True`` (default for --controlled-live), mode is forced to
-        dry_run and accept/submit/payment booking against platforms is fully blocked
-        even if the loaded config said ``mode: live``.
+        ``controlled=True`` is only for ``--controlled-live`` / test harnesses and
+        forces dry_run. Default ``controlled=False`` respects the user's configured
+        mode (including intentional live) and never silently overrides it.
         """
         from centbot.sandbox.isolated import sandbox_backend_info
 
@@ -554,11 +700,14 @@ class CentBotEngine:
         report: dict[str, Any] = {
             "integrations": self.integration_report(),
             "mode": self.config.get("system.mode"),
-            "claims_allowed": False if controlled else ((not dry) and bool(self.config.get("analysis.auto_accept"))),
+            "claims_allowed": False
+            if (controlled or self._controlled_mode)
+            else ((not dry) and bool(self.config.get("analysis.auto_accept"))),
             "sandbox": sandbox_backend_info(),
             "controlled": bool(controlled or self._controlled_mode),
             "acceptor_dry_run": bool(self.acceptor.dry_run),
             "submitter_dry_run": bool(self.submitter.dry_run),
+            "live_readiness": self.live_readiness(),
         }
         analyzed = self.discover_and_analyze()
         report["discovered"] = len(analyzed)
@@ -576,26 +725,36 @@ class CentBotEngine:
         results = []
         if execute_local:
             for row in sort_by_priority(eligible)[: int(self.config.get("system.max_parallel_tasks", 4))]:
-                # Local-only accept mark — never call platform.accept_task in controlled mode
-                self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
+                # Practice mark only when dry_run/controlled — never invent a live claim
+                mark = "dry_run_accepted" if (dry or controlled or self._controlled_mode) else "accepted"
+                if mark == "accepted" and not self.config.is_live():
+                    mark = "dry_run_accepted"
+                if self.config.is_live() and not (controlled or self._controlled_mode):
+                    # Live trial without controlled does not auto-claim; discovery only unless caller schedules
+                    continue
+                self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", (mark, utcnow(), row["id"]))
                 results.append(self.execute_task(row))
         report["executed"] = results
-        # Controlled mode skips payment booking; still record the blocker explicitly
-        report["payments"] = [] if (controlled or self._controlled_mode) else self.reconcile_payments()
-        report["profit"] = self.ledger.total_profit()
+        report["payments"] = [] if (controlled or self._controlled_mode or dry) else self.reconcile_payments()
+        balances = self.ledger.balances()
+        report["profit"] = balances.get("profit")
+        report["bank_balance"] = balances.get("bank")
+        report["crypto_balance"] = balances.get("crypto")
         report["income"] = self.ledger.income_history(20)
         report["platform_stats"] = self.ledger.platform_profitability()
         report["verification"] = {
             "live_discovery": report["discovered"] > 0,
-            "local_execution_attempted": bool(execute_local),
+            "local_execution_attempted": bool(execute_local) and bool(results),
             "local_execution_ok": any(r.get("ok") for r in results) if results else None,
-            "reward_received": False,
-            "reward_blocker": "controlled_dry_run_no_external_actions"
-            if (controlled or self._controlled_mode)
-            else ("dry_run_no_claim" if dry else "no_settled_payout_observed"),
+            "reward_received": bool(report["payments"]),
+            "reward_blocker": (
+                "controlled_dry_run_no_external_actions"
+                if (controlled or self._controlled_mode)
+                else ("dry_run_no_claim" if dry else ("no_settled_payout_observed" if not report["payments"] else None))
+            ),
             "external_accept_blocked": bool(controlled or self._controlled_mode or self.acceptor.dry_run),
             "external_submit_blocked": bool(controlled or self._controlled_mode or self.submitter.dry_run),
-            "external_payment_booking_blocked": bool(controlled or self._controlled_mode),
+            "external_payment_booking_blocked": bool(controlled or self._controlled_mode or dry),
         }
         self.journal.record(
             "live_trial",
@@ -604,9 +763,21 @@ class CentBotEngine:
             eligible=report["eligible"],
             executed=len(results),
             controlled=bool(controlled or self._controlled_mode),
-            reward_received=False,
+            reward_received=bool(report["payments"]),
+            mode=report["mode"],
         )
         return report
+
+    def operations_report(self) -> dict[str, Any]:
+        from centbot.quality.ops_report import build_operations_report
+
+        return build_operations_report(
+            db=self.db,
+            ledger=self.ledger,
+            journal_dir=self.config.path_from("logging.directory", "logs"),
+            mode=str(self.config.get("system.mode")),
+            live=self.config.is_live() and not self._controlled_mode,
+        )
 
     def stop(self) -> None:
         self._running = False

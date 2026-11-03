@@ -36,7 +36,12 @@ class BasedAgentsConnector(PlatformConnector):
         if method.upper() == "GET":
             return self.client.get_json(path, headers=headers)
         resp = self.client.request(method, path, json_body=body, headers=headers)
-        return resp.json() if resp.content else {"ok": True}
+        if not resp.content:
+            return {"ok": False, "error": "empty_body", "status": resp.status_code}
+        try:
+            return resp.json()
+        except Exception:
+            return {"ok": False, "error": "non_json_body", "status": resp.status_code}
 
     def list_tasks(self) -> list[PlatformTask]:
         if not self.enabled:
@@ -87,14 +92,19 @@ class BasedAgentsConnector(PlatformConnector):
         return out
 
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
+        from centbot.platforms.response import interpret_platform_result
+
         path = f"/v1/tasks/{task.external_id}/claim"
         try:
             result = self._signed("POST", path, {})
-            return {"ok": True, "platform": self.name, "external_id": task.external_id, "result": result}
+            interpreted = interpret_platform_result(result, action="claim")
+            return {**interpreted, "platform": self.name, "external_id": task.external_id}
         except PlatformHTTPError as exc:
             return {"ok": False, "error": str(exc), "status": exc.status, "body": exc.body}
 
     def submit_result(self, task: PlatformTask, payload: dict[str, Any]) -> dict[str, Any]:
+        from centbot.platforms.response import interpret_platform_result
+
         body: dict[str, Any] = {
             "summary": payload.get("summary") or payload.get("note") or f"CENTBOT delivery for {task.external_id}",
         }
@@ -115,7 +125,10 @@ class BasedAgentsConnector(PlatformConnector):
         path = f"/v1/tasks/{task.external_id}/deliver"
         try:
             result = self._signed("POST", path, body)
-            return {"ok": True, "status": "submitted", "result": result}
+            interpreted = interpret_platform_result(result, action="submit")
+            if interpreted.get("ok"):
+                interpreted["status"] = "submitted"
+            return interpreted
         except PlatformHTTPError as exc:
             return {"ok": False, "error": str(exc), "status": exc.status, "body": exc.body}
 
@@ -134,12 +147,13 @@ class BasedAgentsConnector(PlatformConnector):
             return {"submission_id": submission_id, "status": "error", "error": str(exc)}
 
     def check_payment(self, task_id: str) -> dict[str, Any]:
+        """Return raw payment payload; settlement is decided by confirm_payment, not this wrapper."""
         try:
             if self.identity:
                 data = self._signed("GET", f"/v1/tasks/{task_id}/payment")
             else:
                 data = self.client.get_json(f"/v1/tasks/{task_id}")
-            return {"ok": True, "task_id": task_id, "payment": data}
+            return {"task_id": task_id, "payment": data}
         except PlatformHTTPError as exc:
             return {"ok": False, "task_id": task_id, "error": str(exc), "body": exc.body}
 
