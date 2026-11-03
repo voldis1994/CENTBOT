@@ -13,12 +13,15 @@ if not defined PY (
 )
 
 echo [CENTBOT] Registering BasedAgents identity...
+echo [CENTBOT] ^(uses unique name CENTBOT-xxxxxxxx — bare CENTBOT is often taken^)
 "%PY%" -m centbot.windows.register_based --name CENTBOT
 set "EC=%ERRORLEVEL%"
 if "%EC%"=="0" (
   echo [CENTBOT] OK. Run STOP.bat then START.bat
 ) else (
   echo [CENTBOT] Register failed — check network / api.basedagents.ai
+  echo [CENTBOT] If name conflict: this build auto-retries unique names. Update via FORCE_UPDATE.bat
+  pause
 )
 ENDLOCAL
 exit /b %EC%

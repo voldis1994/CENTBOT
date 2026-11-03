@@ -33,8 +33,11 @@ if not exist config\local.yaml (
   exit /b 2
 )
 
-if exist data\centbot.pid (
+REM Stale pid after crash blocks START forever — clear dead pid via Python helper
+"%PY%" -c "from centbot.windows.launcher import clear_stale_runtime, already_running; clear_stale_runtime(); import sys; sys.exit(0 if not already_running() else 1)"
+if errorlevel 1 (
   echo [CENTBOT] Already running. Run STOP.bat or FIX_NOW.bat first.
+  pause
   exit /b 1
 )
 
@@ -110,6 +113,8 @@ if "%EC%"=="0" (
   echo [CENTBOT] OK. Open panel URL from data\runtime\dashboard.json
 ) else (
   echo [CENTBOT] Start failed %EC%. See logs\engine.stderr.log
+  echo [CENTBOT] Try: STOP.bat  then  FIX_NOW.bat  /  FULL_SYSTEM.bat
+  pause
 )
 ENDLOCAL
 exit /b %EC%

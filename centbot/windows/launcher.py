@@ -52,6 +52,30 @@ def setup_incomplete() -> bool:
     return not (_root() / "config" / "local.yaml").exists()
 
 
+def _pid_alive(pid: int) -> bool:
+    """True if process exists. On Windows prefer tasklist — os.kill(pid,0) is unreliable after crashes."""
+    if pid <= 0:
+        return False
+    if sys.platform.startswith("win"):
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            out = (proc.stdout or "") + (proc.stderr or "")
+            return str(pid) in out and "No tasks" not in out and "INFO:" not in out
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def already_running() -> bool:
     pid_file = _pid_file()
     if not pid_file.exists():
@@ -64,22 +88,25 @@ def already_running() -> bool:
         except OSError:
             pass
         return False
-    try:
-        os.kill(pid, 0)
+    if _pid_alive(pid):
         return True
+    try:
+        pid_file.unlink(missing_ok=True)
     except OSError:
-        try:
-            pid_file.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
+        pass
+    return False
 
 
 def clear_stale_runtime() -> dict[str, Any]:
     """Drop dead pid / unlock start when previous engine crashed."""
     cleared = False
-    if _pid_file().exists() and not already_running():
+    pid_file = _pid_file()
+    if pid_file.exists() and not already_running():
         cleared = True
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
     return {"cleared_stale_pid": cleared, "running": already_running()}
 
 
