@@ -255,7 +255,12 @@ class WindowsSetup:
         return {"ok": False, "error": "winget_missing"}
 
     def verify_all(self) -> dict[str, Any]:
-        """Honest readiness — Docker/SDK/AVD must actually respond, not just be skipped."""
+        """Honest readiness split: core (engine) vs optional Docker/Android.
+
+        Core missing → SETUP/START hard-fail.
+        Docker/Android missing → warnings only; live PC path must still start so real
+        platform errors are visible (not fake idle behind setup_incomplete).
+        """
         detected = self.detect_components()
         checks: dict[str, Any] = {
             "python": bool(sys.executable),
@@ -284,7 +289,6 @@ class WindowsSetup:
         # Android SDK tools
         checks["adb"] = bool(detected["adb"]["ok"])
         checks["emulator_bin"] = bool(detected["emulator"]["ok"])
-        avd_names: list[str] = []
         if checks["emulator_bin"]:
             from centbot.windows.avd import AVD_NAMES, list_avds
 
@@ -296,20 +300,53 @@ class WindowsSetup:
             checks["centbot_avds_present"] = []
             checks["centbot_avds_ok"] = False
 
-        required = ["python", "git", "imports", "playwright_module"]
-        # On Windows, also require docker + adb/emulator/avds for "complete" setup
-        if sys.platform.startswith("win"):
-            required.extend(["docker", "adb", "emulator_bin", "centbot_avds_ok"])
-        ok = all(bool(checks.get(k)) for k in required)
-        self.progress.mark("verify", ok=ok, detail=json_dumps(checks))
-        if ok:
-            # Mark setup complete only when verify truly passes
-            self.progress._data["completed"] = True
-            self.progress.save()
-        else:
-            self.progress._data["completed"] = False
-            self.progress.save()
-        return {"ok": ok, "checks": checks, "detected": detected, "required": required}
+        core_required = ["python", "git", "imports", "playwright_module"]
+        android_required = ["adb", "emulator_bin", "centbot_avds_ok"]
+        docker_required = ["docker"]
+        core_ok = all(bool(checks.get(k)) for k in core_required)
+        android_ok = all(bool(checks.get(k)) for k in android_required)
+        docker_ok = all(bool(checks.get(k)) for k in docker_required)
+        full_ok = core_ok and android_ok and docker_ok
+
+        warnings: list[str] = []
+        if not docker_ok:
+            warnings.append("docker_not_ready_sandbox_limited")
+        if not android_ok:
+            warnings.append("android_sdk_or_avds_not_ready_emulator_lane_skipped")
+
+        # verify/completed track CORE readiness — enough to run live engine + wizard
+        self.progress.mark(
+            "verify",
+            ok=core_ok,
+            detail=json_dumps(
+                {
+                    "checks": checks,
+                    "core_ok": core_ok,
+                    "android_ok": android_ok,
+                    "docker_ok": docker_ok,
+                    "full_ok": full_ok,
+                    "warnings": warnings,
+                }
+            ),
+        )
+        self.progress._data["completed"] = bool(core_ok)
+        self.progress._data["android_ready"] = bool(android_ok)
+        self.progress._data["docker_ready"] = bool(docker_ok)
+        self.progress._data["full_ok"] = bool(full_ok)
+        self.progress.save()
+        return {
+            "ok": core_ok,
+            "core_ok": core_ok,
+            "android_ok": android_ok,
+            "docker_ok": docker_ok,
+            "full_ok": full_ok,
+            "warnings": warnings,
+            "checks": checks,
+            "detected": detected,
+            "core_required": core_required,
+            "android_required": android_required,
+            "docker_required": docker_required,
+        }
 
     def run(self, *, create_avds: bool = True) -> dict[str, Any]:
         steps: list[dict[str, Any]] = []
@@ -344,8 +381,15 @@ class WindowsSetup:
         if not self.progress.is_done("wizard"):
             self.progress.mark("wizard", ok=False, detail="pending_first_run_wizard")
 
+        warnings = list(verify.get("warnings") or [])
         return {
-            "ok": bool(verify.get("ok")),
+            # ok = core ready (engine can start). Missing Docker/Android are warnings only.
+            "ok": bool(verify.get("core_ok", verify.get("ok"))),
+            "core_ok": bool(verify.get("core_ok")),
+            "full_ok": bool(verify.get("full_ok")),
+            "android_ok": bool(verify.get("android_ok")),
+            "docker_ok": bool(verify.get("docker_ok")),
+            "warnings": warnings,
             "windows": sys.platform.startswith("win"),
             "progress": self.progress.report(),
             "steps": steps,

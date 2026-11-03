@@ -76,28 +76,34 @@ class SetupProgress:
         return bool(st and st.get("ok"))
 
     def is_setup_complete(self) -> bool:
-        """True only when verify marked completed — local.yaml alone is not enough."""
+        """Core ready: verify core checks passed. Docker/Android gaps are optional."""
         if not bool(self._data.get("completed")):
             return False
         verify = self.status("verify") or {}
         return bool(verify.get("ok"))
 
     def missing_required(self) -> list[str]:
+        # Core path only — android_sdk/avds are optional for live PC engine start
         required = [
             "hw_check",
             "python_venv",
             "git",
             "pip_requirements",
             "playwright_browsers",
-            "android_sdk",
-            "android_avds",
             "wizard",
             "verify",
         ]
         return [c for c in required if not self.is_done(c)]
 
+    def missing_optional(self) -> list[str]:
+        optional = ["docker_desktop", "android_sdk", "android_avds"]
+        return [c for c in optional if not self.is_done(c)]
+
     def report(self) -> dict[str, Any]:
         data = dict(self._data)
         data["missing_required"] = self.missing_required()
+        data["missing_optional"] = self.missing_optional()
         data["setup_complete"] = self.is_setup_complete()
+        data["android_ready"] = bool(self._data.get("android_ready"))
+        data["docker_ready"] = bool(self._data.get("docker_ready"))
         return data

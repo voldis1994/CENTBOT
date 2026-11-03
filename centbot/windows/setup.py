@@ -37,6 +37,17 @@ def main(argv: list[str] | None = None) -> int:
     report = setup.run(create_avds=not args.skip_avd)
     text = json.dumps(report, indent=2, default=str)
     print(text)
+    if report.get("warnings"):
+        print(
+            json.dumps(
+                {
+                    "warning": "optional_components_incomplete",
+                    "detail": report.get("warnings"),
+                    "hint": "Core is OK for live START.bat. Install Docker Desktop / Android SDK later for sandbox + emulators.",
+                },
+                indent=2,
+            )
+        )
     if args.report:
         from pathlib import Path
 
@@ -44,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     # Pending confirmations are not hard failures if core verify passed
     if report.get("pending_confirmations") and not args.yes:
         return 2
-    return 0 if report.get("ok") else 1
+    # Exit 0 when CORE ready — missing Docker/Android are warnings, not SETUP failure
+    return 0 if report.get("core_ok", report.get("ok")) else 1
 
 
 if __name__ == "__main__":
