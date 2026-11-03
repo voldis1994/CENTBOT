@@ -114,25 +114,29 @@ def sign_headers(identity: BasedAgentsIdentity, method: str, path: str, body: by
     }
 
 
-def _pow_solve(challenge_b64: str, difficulty: int) -> str:
-    """Find hex nonce such that sha256(challenge || nonce) has `difficulty` leading zero bits."""
-    import base64
+def _leading_zero_bits(digest: bytes) -> int:
+    bits = 0
+    for b in digest:
+        if b == 0:
+            bits += 8
+            continue
+        bits += 8 - b.bit_length()
+        break
+    return bits
 
-    challenge = base64.b64decode(challenge_b64)
+
+def _pow_solve(public_key_b58: str, challenge: str, difficulty: int) -> str:
+    """OpenAPI: sha256(pubkey || utf8(challenge) || nonce_be32) with N leading zero bits.
+
+    Returns 8-char zero-padded hex of the 4-byte big-endian nonce.
+    """
+    pubkey = base58.b58decode(public_key_b58)
+    challenge_utf8 = challenge.encode("utf-8")
     nonce = 0
     while True:
-        nonce_hex = f"{nonce:08x}"
-        digest = hashlib.sha256(challenge + nonce_hex.encode("ascii")).digest()
-        # count leading zero bits
-        bits = 0
-        for b in digest:
-            if b == 0:
-                bits += 8
-                continue
-            bits += 8 - b.bit_length()
-            break
-        if bits >= difficulty:
-            return nonce_hex
+        digest = hashlib.sha256(pubkey + challenge_utf8 + nonce.to_bytes(4, "big")).digest()
+        if _leading_zero_bits(digest) >= difficulty:
+            return f"{nonce:08x}"
         nonce += 1
 
 
@@ -144,26 +148,21 @@ def register_agent(
     capabilities: list[str],
     identity: BasedAgentsIdentity | None = None,
 ) -> BasedAgentsIdentity:
+    """Complete BasedAgents PoW registration. Challenge is signed as UTF-8 as-is (never base64-decoded)."""
+    import base64
+
     identity = identity or generate_identity()
     init = client.post_json("/v1/register/init", {"public_key": identity.public_key_b58})
     challenge_id = init["challenge_id"]
-    challenge = init["challenge"]
+    challenge = str(init["challenge"])
     difficulty = int(init.get("difficulty", 18))
-    nonce = _pow_solve(challenge, difficulty)
-    # signature over utf8 challenge string as docs say: ed25519_sign(utf8_bytes(challenge))
-    # The API doc says: signature: base64(ed25519_sign(utf8_bytes(challenge)))
-    # where challenge is the base64-encoded challenge from init - typically sign the challenge bytes
-    import base64
-
-    challenge_bytes = base64.b64decode(challenge)
-    # Docs: ed25519_sign(utf8_bytes(challenge)) — ambiguous; CLI signs challenge string.
-    # Prefer signing the raw challenge bytes; fallback handled by API errors.
-    sig = identity.signing_key.sign(challenge_bytes).signature
-    sig_b64 = base64.b64encode(sig).decode("ascii")
+    nonce = _pow_solve(identity.public_key_b58, challenge, difficulty)
+    # OpenAPI: "Sign these UTF-8 bytes as-is (do not base64-decode)"
+    sig = identity.signing_key.sign(challenge.encode("utf-8")).signature
     body = {
         "challenge_id": challenge_id,
         "public_key": identity.public_key_b58,
-        "signature": sig_b64,
+        "signature": base64.b64encode(sig).decode("ascii"),
         "nonce": nonce,
         "profile": {
             "name": name,
@@ -173,16 +172,7 @@ def register_agent(
             "version": "1.0.0",
         },
     }
-    try:
-        result = client.post_json("/v1/register/complete", body)
-    except PlatformHTTPError as exc:
-        # Retry signing utf-8 of base64 challenge string if raw bytes rejected
-        if exc.status in (400, 401):
-            sig2 = identity.signing_key.sign(challenge.encode("utf-8")).signature
-            body["signature"] = base64.b64encode(sig2).decode("ascii")
-            result = client.post_json("/v1/register/complete", body)
-        else:
-            raise
+    result = client.post_json("/v1/register/complete", body)
     identity.agent_id = result.get("agent_id") or result.get("id")
     return identity
 

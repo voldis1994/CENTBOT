@@ -35,15 +35,29 @@ def register(*, name: str = "CENTBOT", root: Path | None = None) -> dict[str, An
             "hint_lv": "BasedAgents identity jau ir — claim iespējams.",
         }
     base = str(config.get("platforms.basedagents.base_url") or "https://api.basedagents.ai")
-    client = HttpClient(base.rstrip("/"), timeout=30)
+    # PoW difficulty can be ~22 — allow enough time for solve + complete
+    client = HttpClient(base.rstrip("/"), timeout=120)
     identity = existing or generate_identity()
-    identity = register_agent(
-        client,
-        name=name or "CENTBOT",
-        description="CENTBOT autonomous worker",
-        capabilities=["code", "data", "content", "research", "automation"],
-        identity=identity,
-    )
+    # Persist keypair before network complete so a mid-flight crash still has keys
+    if not existing:
+        save_identity_file(identity, key_path)
+    try:
+        identity = register_agent(
+            client,
+            name=name or "CENTBOT",
+            description="CENTBOT autonomous worker",
+            capabilities=["code", "data", "content", "research", "automation"],
+            identity=identity,
+        )
+    except Exception as exc:  # noqa: BLE001
+        body = getattr(exc, "body", None)
+        return {
+            "ok": False,
+            "error": str(exc),
+            "body": body,
+            "keypair": str(key_path),
+            "hint_lv": "BasedAgents register/complete neizdevās — pārbaudi tīklu un palaid REGISTER_BASED.bat.",
+        }
     save_identity_file(identity, key_path)
     return {
         "ok": True,
