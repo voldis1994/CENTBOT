@@ -1,8 +1,8 @@
-"""Platform registry and extra reward sources."""
+"""Platform registry — live connectors only (no demo catalogs)."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from centbot.core.config import Config
 from centbot.platforms.agentizable import AgentizableConnector
@@ -14,87 +14,97 @@ from centbot.platforms.taskmarket import TaskMarketConnector
 
 
 class ExtraRewardSource(PlatformConnector):
-    """Generic verified extra bounty/reward source adapter."""
+    """Configurable extra live HTTP source.
+
+    Expected config:
+      name, base_url, list_path, enabled
+      item_map optional field mapping
+    """
 
     def __init__(self, name: str, config: dict[str, Any], api_key: str = ""):
         super().__init__(config, api_key)
         self.name = name
+        from centbot.platforms.http import HttpClient
+
+        base = (config.get("base_url") or "").rstrip("/")
+        if not base:
+            raise ValueError(f"extra platform {name} requires base_url")
+        self.client = HttpClient(base, timeout=float(config.get("timeout", 30)))
+        self.list_path = str(config.get("list_path") or "/tasks")
+        self.headers = {}
+        if api_key:
+            self.headers["Authorization"] = f"Bearer {api_key}"
 
     def list_tasks(self) -> list[PlatformTask]:
         if not self.enabled:
             return []
-        demos = self.config.get("demo_tasks") or []
-        tasks: list[PlatformTask] = []
-        for item in demos:
-            tasks.append(
+        data = self.client.get_json(self.list_path, headers=self.headers or None)
+        items = data if isinstance(data, list) else (data or {}).get("tasks") or (data or {}).get("items") or []
+        fmap = self.config.get("item_map") or {}
+        out: list[PlatformTask] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            out.append(
                 PlatformTask(
                     platform=self.name,
-                    external_id=str(item.get("id", f"{self.name}-demo")),
-                    title=str(item.get("title", "Extra reward task")),
-                    description=str(item.get("description", "")),
-                    reward_amount=float(item.get("reward_amount", 5)),
-                    reward_currency=str(item.get("reward_currency", "USD")),
-                    category_hint=str(item.get("category_hint", "other")),
+                    external_id=str(item.get(fmap.get("id", "id"))),
+                    title=str(item.get(fmap.get("title", "title")) or f"{self.name} task"),
+                    description=str(item.get(fmap.get("description", "description")) or ""),
+                    reward_amount=float(item.get(fmap.get("reward", "reward_amount")) or 0),
+                    reward_currency=str(item.get(fmap.get("currency", "reward_currency")) or "USD"),
+                    url=str(item.get(fmap.get("url", "url")) or ""),
                     funded=bool(item.get("funded", True)),
                     available=bool(item.get("available", True)),
+                    claimable=bool(item.get("claimable", True)),
                     automation_allowed=bool(item.get("automation_allowed", True)),
-                    payer_rating=float(item.get("payer_rating", 0.7)),
-                    raw={"source": "extra", **item},
+                    raw={"source": self.name, "item": item},
                 )
             )
-        return tasks
+        return out
 
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
-        return {"ok": True, "external_id": task.external_id}
+        path = str(self.config.get("claim_path") or f"/tasks/{task.external_id}/claim")
+        path = path.replace("{id}", task.external_id)
+        result = self.client.post_json(path, {}, headers=self.headers or None)
+        return {"ok": True, "result": result}
 
     def submit_result(self, task: PlatformTask, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"ok": True, "status": "submitted"}
+        path = str(self.config.get("submit_path") or f"/tasks/{task.external_id}/submit")
+        path = path.replace("{id}", task.external_id)
+        result = self.client.post_json(path, payload, headers=self.headers or None)
+        return {"ok": True, "status": "submitted", "result": result}
 
 
-CORE_BUILDERS = {
-    "jobbi": JobbiConnector,
-    "basedagents": BasedAgentsConnector,
-    "taskmarket": TaskMarketConnector,
-    "bountybook": BountyBookConnector,
-    "agentizable": AgentizableConnector,
-}
-
-
-def build_platforms(config: Config) -> dict[str, PlatformConnector]:
+def build_platforms(
+    config: Config,
+    credential_getter: Callable[[str], Any] | None = None,
+) -> dict[str, PlatformConnector]:
     platforms: dict[str, PlatformConnector] = {}
-    for name, cls in CORE_BUILDERS.items():
-        cfg = config.section("platforms").get(name, {}) or {}
-        platforms[name] = cls(cfg, api_key=config.platform_api_key(name))
+    platforms["jobbi"] = JobbiConnector(config.section("platforms").get("jobbi", {}) or {})
+    platforms["basedagents"] = BasedAgentsConnector(
+        config.section("platforms").get("basedagents", {}) or {},
+        api_key=config.platform_api_key("basedagents"),
+        credential_getter=credential_getter,
+    )
+    platforms["taskmarket"] = TaskMarketConnector(
+        config.section("platforms").get("taskmarket", {}) or {},
+        api_key=config.platform_api_key("taskmarket"),
+        credential_getter=credential_getter,
+    )
+    platforms["bountybook"] = BountyBookConnector(
+        config.section("platforms").get("bountybook", {}) or {},
+        api_key=config.platform_api_key("bountybook"),
+        credential_getter=credential_getter,
+    )
+    platforms["agentizable"] = AgentizableConnector(config.section("platforms").get("agentizable", {}) or {})
 
-    # Additional verified sources from config.platforms.extra list
     extras = config.get("platforms.extra", []) or []
     for item in extras:
-        if not isinstance(item, dict) or not item.get("name"):
+        if not isinstance(item, dict) or not item.get("name") or not item.get("base_url"):
             continue
         name = str(item["name"])
         platforms[name] = ExtraRewardSource(name, item, api_key=config.env(item.get("api_key_env", "")))
-
-    # Built-in extra demo source so checklist item 18 is covered out of the box
-    if "openbounties" not in platforms:
-        platforms["openbounties"] = ExtraRewardSource(
-            "openbounties",
-            {
-                "enabled": True,
-                "demo_tasks": [
-                    {
-                        "id": "ob-demo-pdf-1",
-                        "title": "Extract text from PDF invoice",
-                        "description": "Pull vendor, date, and total from a sample PDF.",
-                        "reward_amount": 15,
-                        "reward_currency": "USD",
-                        "category_hint": "pdf",
-                        "funded": True,
-                        "automation_allowed": True,
-                        "payer_rating": 0.8,
-                    }
-                ],
-            },
-        )
     return platforms
 
 
@@ -108,8 +118,17 @@ def verify_integrations(platforms: dict[str, PlatformConnector]) -> dict[str, An
             tasks = conn.list_tasks()
             entry["sample_task_count"] = len(tasks)
             entry["ok"] = True
+            entry["live"] = True
+            if tasks:
+                entry["sample"] = {
+                    "id": tasks[0].external_id,
+                    "title": tasks[0].title[:80],
+                    "reward": tasks[0].reward_amount,
+                    "currency": tasks[0].reward_currency,
+                }
         except Exception as exc:  # noqa: BLE001
             entry["ok"] = False
+            entry["live"] = False
             entry["error"] = str(exc)
         report[name] = entry
     return report

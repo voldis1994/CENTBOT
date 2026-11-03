@@ -1,51 +1,47 @@
 # CENTBOT
 
-Autonomous paid-task workstation: discover → analyze → execute → verify → submit → account rewards.
+Autonomous paid-task workstation on **live** platform APIs (no demo catalogs).
 
-Default mode is **`dry_run`** (no live accepts, no real money movement). Live mode requires explicit config and API keys.
+Default `system.mode` is `dry_run`: real discovery + local execution, **no** claims/submits.  
+Set `mode: live` and `analysis.auto_accept: true` plus platform credentials for real claims.
+
+## Live platforms
+
+| Platform | Base URL | Auth |
+|----------|----------|------|
+| Jobbi | `https://jobbi.org/gigs.json` | none (index only; claim on origin board) |
+| BasedAgents | `https://api.basedagents.ai` | Ed25519 AgentSig keypair |
+| TaskMarket | `https://api.taskmarket.dev` | Ethereum EIP-191 wallet |
+| BountyBook | `https://api.bountybook.ai` | Bearer + wallet |
+| Agentizable | `https://api.agentizable.ai` | discovery live; claim via first-party auth URL |
 
 ## Quick start
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# No-money-risk demo (items 89–94 scaffolding)
+# Verify live feeds
+python -m centbot --integrations
+python -m centbot --discover
+
+# Local practice on real listings (no claims)
 python -m centbot --demo
 
-# Single cycle
-python -m centbot --once
+# Register BasedAgents identity (saves keypair)
+python -m centbot --register-basedagents MyCentBot --keypair data/basedagents-keypair.json
 
-# 24/7 loop + dashboard http://127.0.0.1:8787
-./scripts/start.sh            # Windows: START.bat
-./scripts/stop.sh             # Windows: STOP.bat
+# 24/7
+./scripts/start.sh   # Windows: START.bat
 ```
 
-## Layout
-
-| Path | Purpose |
-|------|---------|
-| `centbot/core` | Engine, SQLite, config, monitor, recovery, priority, parallel pool, backup, emergency stop |
-| `centbot/platforms` | Jobbi, BasedAgents, TaskMarket, BountyBook, Agentizable + extra sources |
-| `centbot/discovery` | Global scanner, new-task watcher, dedup |
-| `centbot/analysis` | Availability, funding, trust, category, complexity, ETA, cost, EV profit, reject/accept |
-| `centbot/executors` | CSV, Excel, JSON/XML, PDF, image, text, programming + tests |
-| `centbot/browser` | Playwright automation + allow-listed scraping |
-| `centbot/android` | ADB, emulator mgmt, gestures, screenshots, app testing |
-| `centbot/ai` | Ollama client, analyzer, planner, decomposer, workers |
-| `centbot/finance` | Bank/crypto ledger, FX, fees, withdrawals (manual approve), optimization |
-| `centbot/dashboard` | Control panel API/UI |
-| `START.bat` / `STOP.bat` | Windows control |
-| `scripts/start.sh` / `stop.sh` | Unix control |
+Copy `config/local.yaml.example` → `config/local.yaml` for live keys and `mode: live`.
 
 ## Safety
 
-- Credentials encrypted at rest (`data/credentials.enc`); never commit secrets.
+- Never commit private keys. Use env vars / `data/credentials.enc`.
 - Withdrawals require manual approval.
-- Web fetch only for allow-listed hosts + `robots.txt`.
-- Untrusted code runs in a subprocess sandbox under `sandbox/`.
-- Emergency stop: create `data/EMERGENCY_STOP` or use dashboard button.
+- Jobbi/Agentizable claims are handoff-only where the platform requires human wallet confirmation.
+- Emergency stop: `data/EMERGENCY_STOP` or dashboard button.
 
 ## Tests
 

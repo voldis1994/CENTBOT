@@ -1,10 +1,10 @@
-# CENTBOT default configuration
+# CENTBOT — live platform configuration (no demo catalogs)
 system:
   name: CENTBOT
-  mode: dry_run  # dry_run | live
+  mode: dry_run  # dry_run = discover/analyze/execute locally, no claim/submit | live = real claims
   timezone: Europe/London
-  cycle_interval_seconds: 30
-  max_parallel_tasks: 4
+  cycle_interval_seconds: 60
+  max_parallel_tasks: 2
   emergency_stop_file: data/EMERGENCY_STOP
   pid_file: data/centbot.pid
 
@@ -38,7 +38,7 @@ backup:
 
 security:
   credentials_file: data/credentials.enc
-  rate_limit_per_minute: 30
+  rate_limit_per_minute: 20
   sandbox_dir: sandbox
 
 ai:
@@ -50,46 +50,67 @@ ai:
 platforms:
   jobbi:
     enabled: true
-    base_url: ""
-    api_key_env: JOBBI_API_KEY
+    base_url: https://jobbi.org
+    lane: agent
+    min_reward: 1
+    limit: 100
+    # optional: currency: USD / source: algora / query: python / operator: centbot
   basedagents:
     enabled: true
-    base_url: ""
-    api_key_env: BASEDAGENTS_API_KEY
+    base_url: https://api.basedagents.ai
+    min_usdc: 0.1
+    limit: 50
+    # keypair_path: data/basedagents-keypair.json
+    # or env BASEDAGENTS_KEYPAIR_PATH
   taskmarket:
     enabled: true
-    base_url: ""
-    api_key_env: TASKMARKET_API_KEY
+    base_url: https://api.taskmarket.dev
+    min_reward: 0.5
+    limit: 50
+    wallet_env: CENTBOT_ETH_PRIVATE_KEY
   bountybook:
     enabled: true
-    base_url: ""
+    base_url: https://api.bountybook.ai
+    min_reward: 1
+    limit: 50
     api_key_env: BOUNTYBOOK_API_KEY
+    wallet_env: CENTBOT_ETH_PRIVATE_KEY
   agentizable:
     enabled: true
-    base_url: ""
-    api_key_env: AGENTIZABLE_API_KEY
+    base_url: https://api.agentizable.ai
+    network: base-mainnet
+    claimable_only: true
+    min_reward: 1
+  # extra:
+  #   - name: customboard
+  #     enabled: true
+  #     base_url: https://api.example.com
+  #     list_path: /v1/tasks
+  #     api_key_env: CUSTOM_API_KEY
 
 discovery:
-  poll_interval_seconds: 60
-  min_reward: 1.0
-  currencies: [USD, EUR, GBP, USDT, BTC, ETH]
+  poll_interval_seconds: 300  # Jobbi asks for ~hourly; keep >= 60
+  min_reward: 0.5
+  currencies: [USD, USDC, EUR, GBP, USDT, BTC, ETH]
   duplicate_similarity_threshold: 0.92
 
 analysis:
-  min_expected_profit: 0.5
-  min_reward_probability: 0.4
+  min_expected_profit: 0.25
+  min_reward_probability: 0.35
   max_estimated_hours: 8
   reject_unfunded: true
-  reject_untrusted_payer_below: 0.3
-  auto_accept: false  # requires explicit enable + live mode
+  reject_untrusted_payer_below: 0.25
+  auto_accept: false  # live claims only when true AND system.mode=live
 
 finance:
-  crypto_wallet_public: ""  # public receive address only
-  supported_currencies: [USD, EUR, GBP, USDT, BTC, ETH]
+  crypto_wallet_public: ""  # public receive / payout address
+  supported_currencies: [USD, EUR, GBP, USDC, USDT, BTC, ETH]
   default_currency: USD
   withdrawal_requires_manual_approval: true
   stop_platform_after_losses: 3
   stop_platform_loss_window_hours: 72
+  simulate_rewards_in_dry_run: false
+  reconcile_payments: true
 
 android:
   enabled: false
@@ -102,7 +123,7 @@ browser:
   enabled: true
   headless: true
   timeout_ms: 30000
-  user_agent: "CENTBOT/1.0 (authorized automation; respect robots.txt)"
+  user_agent: "CENTBOT/1.0 (+https://github.com/voldis1994/CENTBOT)"
 
 dashboard:
   host: 127.0.0.1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ def setup_logging(log_dir: Path, level: str = "INFO", max_bytes: int = 10_485_76
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
     fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
-    console = logging.StreamHandler()
+    console = logging.StreamHandler(sys.stderr)
     console.setFormatter(fmt)
     root.addHandler(console)
 

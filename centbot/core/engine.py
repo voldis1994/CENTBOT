@@ -78,7 +78,8 @@ class CentBotEngine:
             journal=self.journal,
         )
         self.pool = ParallelTaskSystem(max_workers=int(config.get("system.max_parallel_tasks", 4)))
-        self.platforms = build_platforms(config)
+        self.credentials = CredentialStore(config.path_from("security.credentials_file", "data/credentials.enc"))
+        self.platforms = build_platforms(config, credential_getter=self.credentials.get)
         self.scanner = GlobalTaskScanner(self.platforms, self.db, self.journal)
         self.dedup = DuplicateFilter(float(config.get("discovery.duplicate_similarity_threshold", 0.92)))
         self.watcher = NewTaskWatcher(self.db, self.journal)
@@ -102,7 +103,6 @@ class CentBotEngine:
         )
         self.payments = PaymentIntegrations(str(config.get("finance.crypto_wallet_public", "")))
         self.optimizer = ProfitOptimizer(self.db, self.ledger, self.journal, config.section("finance"))
-        self.credentials = CredentialStore(config.path_from("security.credentials_file", "data/credentials.enc"))
         self.rate_limiter = RateLimiter(int(config.get("security.rate_limit_per_minute", 30)))
         self.ollama = OllamaClient(
             base_url=str(config.get("ai.ollama_base_url", "http://127.0.0.1:11434")),
@@ -243,24 +243,31 @@ class CentBotEngine:
         )
         if ok:
             self.ledger.update_platform_stats(task_row["platform"], completed=1)
-            submit_payload = {"evidence": str(evidence), "output": outcome.get("result", {}).get("output")}
-            self.submitter.submit(task_row, submit_payload)
-            # Dry-run synthetic reward confirmation path (items 91-94 scaffolding)
-            if self.config.is_dry_run():
+            from centbot.platforms.hydrate import task_from_row
+
+            submit_payload = {
+                "summary": f"CENTBOT completed {task_row.get('title')}",
+                "evidence": str(evidence),
+                "output": outcome.get("result", {}).get("output"),
+                "content": outcome.get("result", {}).get("output"),
+            }
+            task_obj = task_row.get("_task") or task_from_row(task_row)
+            submit_row = {**task_row, "_task": task_obj}
+            submit_result = self.submitter.submit(submit_row, submit_payload)
+            self.journal.record("submit_result", "ok" if submit_result.get("ok") else "pending", task_id=task_id, result=submit_result)
+            # Optional synthetic accounting only when explicitly enabled (off by default)
+            if self.config.is_dry_run() and bool(self.config.get("finance.simulate_rewards_in_dry_run", False)):
                 reward = float(task_row.get("reward_amount") or 0)
                 currency = str(task_row.get("reward_currency") or "USD")
-                tx = f"dryrun-{task_id}"
-                kind = "crypto" if currency.upper() in {"USDT", "BTC", "ETH", "USDC"} else "bank"
-                if kind == "crypto":
-                    self.ledger.record_crypto_reward(amount=reward, currency=currency, platform=task_row["platform"], task_id=task_id, tx_ref=tx)
+                tx = f"sim-{task_id}"
+                if currency.upper() in {"USDT", "BTC", "ETH", "USDC"}:
+                    self.ledger.record_crypto_reward(
+                        amount=reward, currency=currency, platform=task_row["platform"], task_id=task_id, tx_ref=tx
+                    )
                 else:
-                    self.ledger.record_bank_reward(amount=reward, currency=currency, platform=task_row["platform"], task_id=task_id, tx_ref=tx)
-                cost = float(task_row.get("estimated_cost") or 0)
-                if cost:
-                    self.ledger.record_expense(amount=cost, currency=self.config.get("finance.default_currency", "USD"), tx_ref=f"cost-{task_id}", notes="estimated compute")
-                self.optimizer.learn_from_reward(task_row["platform"], True, amount_base=float(task_row.get("expected_profit") or 0))
-                real_profit = reward - cost
-                self.journal.record("first_reward_path", "ok", task_id=task_id, reward=reward, cost=cost, profit=real_profit)
+                    self.ledger.record_bank_reward(
+                        amount=reward, currency=currency, platform=task_row["platform"], task_id=task_id, tx_ref=tx
+                    )
         else:
             self.optimizer.learn_from_reward(task_row["platform"], False)
             self.rejection_repair.handle(task_id, reason=str(outcome.get("error") or "failed"))
@@ -268,27 +275,78 @@ class CentBotEngine:
         return {"ok": ok, "task_id": task_id, "evidence": str(evidence)}
 
     def schedule_eligible(self) -> int:
+        from centbot.platforms.hydrate import task_from_row
+
         rows = self.db.fetchall("SELECT * FROM tasks WHERE status IN ('eligible','accepted','needs_repair') ORDER BY priority DESC")
-        # Rehydrate minimal fields; dry-run demos don't need PlatformTask object for execution
         launched = 0
         for row in sort_by_priority(rows):
             if not self.pool.has_capacity():
                 break
             if self.emergency.is_active():
                 break
-            # Accept if needed
+            task_obj = task_from_row(row)
+            row = {**row, "_task": task_obj}
             if row["status"] == "eligible":
-                # Auto-accept in dry_run always; live only if configured
-                accept = self.acceptor.accept({**row, "status": "eligible", "_task": None})
-                if not accept.get("ok") and not self.config.is_dry_run():
-                    continue
-                if self.config.is_dry_run() or accept.get("ok"):
+                if self.config.is_dry_run():
+                    # Local practice run: mark accepted without calling platform claim APIs
+                    self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
+                    row["status"] = "accepted"
+                else:
+                    accept = self.acceptor.accept({**row, "status": "eligible", "_task": task_obj})
+                    if not accept.get("ok"):
+                        self.journal.record("accept", "skipped", task_id=row["id"], result=accept)
+                        continue
                     self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
                     self.ledger.update_platform_stats(row["platform"], accepted=1)
                     row["status"] = "accepted"
             self.pool.submit(row["id"], int(row.get("priority") or 50), self.execute_task, row)
             launched += 1
         return launched
+
+    def reconcile_payments(self) -> list[dict[str, Any]]:
+        """Poll platforms for settled payouts and book real income rows."""
+        if not self.config.get("finance.reconcile_payments", True):
+            return []
+        updates: list[dict[str, Any]] = []
+        pending = self.db.fetchall(
+            "SELECT * FROM tasks WHERE status IN ('completed','submitted','verified') ORDER BY updated_at DESC LIMIT 40"
+        )
+        for row in pending:
+            conn = self.platforms.get(row["platform"])
+            if not conn or not hasattr(conn, "check_payment"):
+                continue
+            try:
+                pay = conn.check_payment(row["external_id"])
+            except Exception as exc:  # noqa: BLE001
+                self.journal.record("payment_check", "error", task_id=row["id"], error=str(exc))
+                continue
+            payment = pay.get("payment") if isinstance(pay, dict) else None
+            status = None
+            tx_hash = None
+            if isinstance(payment, dict):
+                status = payment.get("payment_status") or payment.get("status") or (payment.get("payment") or {}).get("status")
+                tx_hash = payment.get("payment_tx_hash") or payment.get("tx_hash")
+                task_obj = payment.get("task") if isinstance(payment.get("task"), dict) else payment
+                if isinstance(task_obj, dict):
+                    status = status or task_obj.get("payment_status") or task_obj.get("status")
+                    tx_hash = tx_hash or task_obj.get("payment_tx_hash")
+            if status in {"settled", "released", "paid", "verified"} or (isinstance(status, str) and status.endswith("settled")):
+                amount = float(row.get("reward_amount") or 0)
+                currency = str(row.get("reward_currency") or "USDC")
+                tx_ref = str(tx_hash or f"{row['platform']}-{row['external_id']}-payout")
+                recorded = self.ledger.record_crypto_reward(
+                    amount=amount,
+                    currency=currency,
+                    platform=row["platform"],
+                    task_id=row["id"],
+                    tx_ref=tx_ref,
+                )
+                if recorded:
+                    self.optimizer.learn_from_reward(row["platform"], True, amount_base=amount)
+                    self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("paid", utcnow(), row["id"]))
+                    updates.append({"task_id": row["id"], "tx_ref": tx_ref, "amount": amount, "currency": currency})
+                    self.journal.record("payment_received", "ok", task_id=row["id"], tx_ref=tx_ref, amount=amount)
+        return updates
 
     def cycle_once(self) -> dict[str, Any]:
         if self.emergency.is_active():
@@ -303,6 +361,7 @@ class CentBotEngine:
         analyzed = self.discover_and_analyze()
         launched = self.schedule_eligible()
         submission_updates = self.status_checker.poll_pending()
+        payments = self.reconcile_payments()
         if self.config.get("backup.enabled", True):
             self.backup.maybe_backup(float(self.config.get("backup.interval_hours", 6)))
         if self.config.get("profit_optimization.enabled", True) and self._cycles % int(self.config.get("profit_optimization.rebalance_every_cycles", 20) or 20) == 0:
@@ -317,8 +376,10 @@ class CentBotEngine:
             "analyzed": len(analyzed),
             "launched": launched,
             "submissions": len(submission_updates),
+            "payments": len(payments),
             "profit": self.ledger.total_profit(),
             "active_workers": self.pool.active_count(),
+            "mode": self.config.get("system.mode"),
         }
         self.journal.record("cycle", "ok", **summary)
         return summary
@@ -355,22 +416,37 @@ class CentBotEngine:
             self.shutdown()
 
     def run_demo_pipeline(self) -> dict[str, Any]:
-        """Execute a no-money-risk trial covering discovery → execute → reward accounting."""
-        report: dict[str, Any] = {"integrations": self.integration_report()}
+        """Live discovery trial: fetch real gigs, analyze, optionally execute locally without claims."""
+        return self.run_live_trial(execute_local=True)
+
+    def run_live_trial(self, *, execute_local: bool = True) -> dict[str, Any]:
+        """Pull real platform feeds, analyze, and (optionally) practice-execute without claiming."""
+        report: dict[str, Any] = {"integrations": self.integration_report(), "mode": self.config.get("system.mode")}
         analyzed = self.discover_and_analyze()
         report["discovered"] = len(analyzed)
         eligible = [t for t in analyzed if t.get("status") == "eligible"]
         report["eligible"] = len(eligible)
+        report["samples"] = [
+            {"platform": t["platform"], "title": (t.get("title") or "")[:80], "reward": t.get("reward_amount"), "currency": t.get("reward_currency")}
+            for t in sort_by_priority(eligible)[:10]
+        ]
         results = []
-        # Run up to max_parallel demo tasks synchronously for determinism in tests
-        for row in sort_by_priority(eligible)[: int(self.config.get("system.max_parallel_tasks", 4))]:
-            self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
-            results.append(self.execute_task(row))
+        if execute_local:
+            for row in sort_by_priority(eligible)[: int(self.config.get("system.max_parallel_tasks", 4))]:
+                self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("accepted", utcnow(), row["id"]))
+                results.append(self.execute_task(row))
         report["executed"] = results
+        report["payments"] = self.reconcile_payments()
         report["profit"] = self.ledger.total_profit()
         report["income"] = self.ledger.income_history(20)
         report["platform_stats"] = self.ledger.platform_profitability()
-        self.journal.record("demo_pipeline", "ok", **{k: report[k] for k in ("discovered", "eligible", "profit")})
+        self.journal.record(
+            "live_trial",
+            "ok",
+            discovered=report["discovered"],
+            eligible=report["eligible"],
+            executed=len(results),
+        )
         return report
 
     def stop(self) -> None:

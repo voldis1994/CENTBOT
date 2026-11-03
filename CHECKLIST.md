@@ -14,12 +14,12 @@
 | 10 | CPU/RAM/GPU/net uzraudzība | Done | `centbot/core/monitor.py` |
 | 11 | Paralēlie uzdevumi | Done | `centbot/core/parallel.py` |
 | 12 | Prioritātes | Done | `centbot/core/priority.py` |
-| 13 | Jobbi | Done | `centbot/platforms/jobbi.py` |
-| 14 | BasedAgents | Done | `centbot/platforms/basedagents.py` |
-| 15 | TaskMarket | Done | `centbot/platforms/taskmarket.py` |
-| 16 | BountyBook pārbaude | Done | `bountybook.py` + `verify_integrations` |
-| 17 | Agentizable pārbaude | Done | `agentizable.py` + `verify_integrations` |
-| 18 | Citi atlīdzību avoti | Done | `platforms/registry.py` (`openbounties`) |
+| 13 | Jobbi | Live | `https://jobbi.org/gigs.json` |
+| 14 | BasedAgents | Live | `https://api.basedagents.ai` + AgentSig |
+| 15 | TaskMarket | Live | `https://api.taskmarket.dev` + EIP-191 |
+| 16 | BountyBook pārbaude | Live client | `api.bountybook.ai` (host may vary) |
+| 17 | Agentizable pārbaude | Live discovery | `api.agentizable.ai` |
+| 18 | Citi atlīdzību avoti | Live | `platforms.extra` HTTP adapters |
 | 19 | Globālais meklētājs | Done | `discovery/scanner.py` |
 | 20 | Jaunu uzdevumu noteikšana | Done | `discovery/watcher.py` |
 | 21 | Dublikātu filtrs | Done | `discovery/dedup.py` |
@@ -92,7 +92,7 @@
 | 88 | Avārijas apturēšana | Done | `core/emergency.py` |
 | 89 | Moduļu mijiedarbība | Done | `tests/test_centbot.py` |
 | 90 | Izmēģinājums bez naudas riska | Done | `python -m centbot --demo` |
-| 91–94 | Pirmā apmaksātā/atlīdzības ceļš | Scaffold | dry-run synthetic reward in engine |
+| 91–94 | Pirmā apmaksātā/atlīdzības ceļš | Live | `reconcile_payments` + platform `check_payment` |
 | 95 | Paralēli uzdevumi | Done | parallel pool + demo |
 | 96 | 24h darbības režīms | Ready | `run_forever` / start scripts |
 | 97 | Resursu optimizācija | Partial | monitor thresholds + max_parallel tuning |

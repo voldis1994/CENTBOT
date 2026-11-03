@@ -1,4 +1,4 @@
-"""Submitted work status checks."""
+"""Submitted work status checks against live platforms."""
 
 from __future__ import annotations
 
@@ -14,18 +14,21 @@ class SubmissionStatusChecker:
 
     def poll_pending(self) -> list[dict[str, Any]]:
         rows = self.db.fetchall(
-            "SELECT * FROM submissions WHERE status IN ('submitted', 'dry_run_submitted', 'pending') ORDER BY id DESC LIMIT 50"
+            "SELECT s.*, t.external_id AS task_external_id FROM submissions s "
+            "LEFT JOIN tasks t ON t.id = s.task_id "
+            "WHERE s.status IN ('submitted', 'dry_run_submitted', 'pending') "
+            "ORDER BY s.id DESC LIMIT 50"
         )
         updates = []
         for row in rows:
-            conn = self.platforms.get(row["platform"])
-            if not conn:
-                continue
-            # Demo: dry_run submissions auto-approve
             if row["status"] == "dry_run_submitted":
-                status = "approved"
+                status = "local_only"
             else:
-                status = conn.check_submission_status(str(row["id"])).get("status", "unknown")
+                conn = self.platforms.get(row["platform"])
+                if not conn:
+                    continue
+                external = row.get("task_external_id") or str(row["id"])
+                status = conn.check_submission_status(str(external)).get("status", "unknown")
             self.db.execute(
                 "UPDATE submissions SET status=?, checked_at=? WHERE id=?",
                 (status, utcnow(), row["id"]),
