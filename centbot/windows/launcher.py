@@ -201,9 +201,17 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
     out_log = open(log_dir / "engine.stdout.log", "a", encoding="utf-8")  # noqa: SIM115
     err_log = open(log_dir / "engine.stderr.log", "a", encoding="utf-8")  # noqa: SIM115
 
-    # Prefer packaged exe when present (same folder as install root)
+    # Prefer Python engine — old CENTBOT.exe without durable CA causes _MEI TLS failures.
+    # Use exe only when CENTBOT_USE_EXE=1 and certs/cacert.pem exists beside it.
     exe = root / "CENTBOT.exe"
-    if exe.exists() and sys.platform.startswith("win"):
+    ca = root / "certs" / "cacert.pem"
+    use_exe = (
+        sys.platform.startswith("win")
+        and exe.exists()
+        and ca.is_file()
+        and os.environ.get("CENTBOT_USE_EXE", "").strip() == "1"
+    )
+    if use_exe:
         cmd = [str(exe), "--engine"]
     else:
         cmd = [sys.executable, "-m", "centbot"]
@@ -212,6 +220,10 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
     env = os.environ.copy()
     env["CENTBOT_LAUNCHED_BY"] = "START.bat"
     env["CENTBOT_ROOT"] = str(root)
+    if ca.is_file():
+        env["SSL_CERT_FILE"] = str(ca)
+        env["REQUESTS_CA_BUNDLE"] = str(ca)
+        env["CURL_CA_BUNDLE"] = str(ca)
     creationflags = 0
     if sys.platform.startswith("win"):
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)

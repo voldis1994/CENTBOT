@@ -1,5 +1,5 @@
 @echo off
-REM CENTBOT START — engine + Android emulators + control panel
+REM CENTBOT START — prefer Python (reliable TLS). Old CENTBOT.exe without certs\cacert.pem is skipped.
 SETLOCAL EnableExtensions
 cd /d "%~dp0"
 
@@ -8,7 +8,7 @@ if exist data\EMERGENCY_STOP (
   exit /b 1
 )
 
-REM Prefer project venv created by SETUP.bat
+REM Prefer project venv
 set "PY="
 if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
 if not defined PY (
@@ -22,35 +22,20 @@ if not defined PY (
   exit /b 1
 )
 
-REM If core deps missing, force SETUP before start (fixes bare Python / zip download)
 "%PY%" -c "import yaml" >nul 2>&1
 if errorlevel 1 (
-  echo [CENTBOT] Dependencies missing ^(no yaml^). Launching SETUP.bat ...
+  echo [CENTBOT] Dependencies missing. Launching SETUP.bat ...
   call "%~dp0SETUP.bat"
   if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
 )
 
-REM Require completed SETUP (verify ok) — local.yaml alone is NOT enough on Windows
-if not exist data\setup\progress.json (
-  echo [CENTBOT] SETUP not completed. Launching SETUP.bat ...
+if not exist config\local.yaml (
+  echo [CENTBOT] No config\local.yaml — running SETUP wizard once...
   call "%~dp0SETUP.bat"
-  if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
-)
-
-"%PY%" -c "from centbot.windows.launcher import setup_incomplete; import sys; sys.exit(1 if setup_incomplete() else 0)"
-if errorlevel 1 (
-  echo [CENTBOT] Installation incomplete ^(need SETUP verify + config\local.yaml^). Running SETUP.bat...
-  call "%~dp0SETUP.bat"
-  if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
-  "%PY%" -c "from centbot.windows.launcher import setup_incomplete; import sys; sys.exit(1 if setup_incomplete() else 0)"
-  if errorlevel 1 (
-    echo [CENTBOT] Still incomplete after SETUP. Fix errors above, then re-run START.bat
-    exit /b 2
-  )
 )
 
 if exist data\centbot.pid (
-  echo [CENTBOT] Already running ^(data\centbot.pid^). Use STOP.bat first.
+  echo [CENTBOT] Already running. Use STOP.bat first.
   exit /b 1
 )
 
@@ -59,27 +44,41 @@ if not exist logs mkdir logs
 if not exist backups mkdir backups
 if not exist sandbox mkdir sandbox
 if not exist data\runtime mkdir data\runtime
+if not exist certs mkdir certs
 
-REM Prefer packaged exe when present
-if exist "%~dp0CENTBOT.exe" (
-  echo [CENTBOT] Starting LIVE via CENTBOT.exe ...
+REM Seed durable TLS CA next to install (fixes _MEI certifi errors without exe rebuild)
+if not exist "certs\cacert.pem" if exist "centbot\certs\cacert.pem" copy /Y "centbot\certs\cacert.pem" "certs\cacert.pem" >nul
+if not exist "certs\cacert.pem" (
+  "%PY%" -c "import certifi,shutil,pathlib; p=pathlib.Path('certs'); p.mkdir(exist_ok=True); shutil.copy(certifi.where(), p/'cacert.pem'); print('[CENTBOT] seeded', p/'cacert.pem')"
+)
+
+REM Only use CENTBOT.exe if it has a durable CA beside it (otherwise Python path — no _MEI TLS bug)
+set "USE_EXE="
+if /I "%CENTBOT_USE_EXE%"=="1" if exist "%~dp0CENTBOT.exe" if exist "%~dp0certs\cacert.pem" set "USE_EXE=1"
+
+if defined USE_EXE (
+  echo [CENTBOT] Starting via CENTBOT.exe ...
+  set "CENTBOT_ROOT=%CD%"
   "%~dp0CENTBOT.exe"
   set "EC=%ERRORLEVEL%"
   goto :done
 )
 
-echo [CENTBOT] Starting LIVE system via launcher...
+if exist "%~dp0CENTBOT.exe" if not exist "%~dp0certs\cacert.pem" (
+  echo [CENTBOT] Skipping old CENTBOT.exe ^(no certs\cacert.pem^) — using Python instead.
+  echo           After git pull, run BUILD_EXE.bat once if you want a fresh exe.
+)
+
+echo [CENTBOT] Starting LIVE via Python ...
+set "CENTBOT_ROOT=%CD%"
 "%PY%" -m centbot.windows.start
 set "EC=%ERRORLEVEL%"
 
 :done
 if "%EC%"=="0" (
-  echo [CENTBOT] Started. Open the URL printed above ^(port auto-bumps if 8787 is busy^).
-  echo           If the page fails: STOP.bat then START.bat again; see logs\engine.stderr.log
+  echo [CENTBOT] Started. Panel URL is printed above / in data\runtime\dashboard.json
 ) else (
-  echo [CENTBOT] Start failed with code %EC%
-  echo           If "address already in use": run STOP.bat, then START.bat
-  echo           Or open http://127.0.0.1:8788/ if port was bumped — see data\runtime\dashboard.json
+  echo [CENTBOT] Start failed code %EC%. Run STOP.bat then retry. See logs\engine.stderr.log
 )
 ENDLOCAL
 exit /b %EC%

@@ -94,3 +94,13 @@ def test_vendored_cacert_exists_in_repo():
     pem = root / "centbot" / "certs" / "cacert.pem"
     assert pem.is_file()
     assert pem.stat().st_size > 10_000
+
+
+def test_emulator_status_label_when_enabled_without_devices():
+    from centbot.android.emulator import EmulatorManager
+
+    emu = EmulatorManager(enabled=True, max_emulators=4)
+    st = emu.status()
+    assert st["enabled"] is True
+    assert st["label"].startswith("ON")
+    assert "running" in st and "available" in st
