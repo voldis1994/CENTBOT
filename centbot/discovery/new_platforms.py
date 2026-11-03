@@ -10,7 +10,8 @@ from typing import Any
 
 import yaml
 
-from centbot.core.config import ROOT, Config
+from centbot.core.config import Config
+from centbot.runtime_paths import install_root
 from centbot.platforms.http import HttpClient, PlatformHTTPError
 from centbot.platforms.registry import ExtraRewardSource, build_platforms
 
@@ -109,7 +110,7 @@ def auto_attach_reachable(config: Config, *, persist: bool = True) -> dict[str, 
         )
         attached.append(str(cand["name"]))
     if attached and persist:
-        local_path = ROOT / "config" / "local.yaml"
+        local_path = install_root() / "config" / "local.yaml"
         existing: dict[str, Any] = {}
         if local_path.exists():
             existing = yaml.safe_load(local_path.read_text(encoding="utf-8")) or {}

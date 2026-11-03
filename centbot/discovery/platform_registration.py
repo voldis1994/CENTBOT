@@ -10,14 +10,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from centbot.core.config import Config, ROOT
+from centbot.core.config import Config
+from centbot.runtime_paths import install_root
 from centbot.core.logger import ActionJournal, get_logger
 from centbot.discovery.new_platforms import scout_configured_extras
 from centbot.windows.secrets import SecretStore
 
 log = get_logger("centbot.registration")
 
-REGISTRY_PATH = ROOT / "data" / "platforms" / "accounts.json"
+def _registry_path() -> "Path":
+    from pathlib import Path
+
+    return install_root() / "data" / "platforms" / "accounts.json"
+
+
+REGISTRY_PATH = None  # use _registry_path(); kept for import compat
 
 
 def _utcnow() -> str:
@@ -25,7 +32,7 @@ def _utcnow() -> str:
 
 
 def load_registry(path: Path | None = None) -> dict[str, Any]:
-    path = Path(path) if path else REGISTRY_PATH
+    path = Path(path) if path else _registry_path()
     if not path.exists():
         return {"accounts": {}, "updated_at": None}
     try:
@@ -35,7 +42,7 @@ def load_registry(path: Path | None = None) -> dict[str, Any]:
 
 
 def save_registry(data: dict[str, Any], path: Path | None = None) -> Path:
-    path = Path(path) if path else REGISTRY_PATH
+    path = Path(path) if path else _registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     data["updated_at"] = _utcnow()
     path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")

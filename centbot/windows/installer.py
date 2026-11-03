@@ -14,8 +14,13 @@ import venv
 from pathlib import Path
 from typing import Any, Callable
 
-# Avoid importing centbot.core.config here — that pulls PyYAML before SETUP.bat can pip-install it.
-ROOT = Path(__file__).resolve().parents[2]
+# Prefer CENTBOT_ROOT / install dir (exe-safe). Avoid config.py import (PyYAML chicken/egg).
+try:
+    from centbot.runtime_paths import install_root
+
+    ROOT = install_root()
+except Exception:  # noqa: BLE001
+    ROOT = Path(__file__).resolve().parents[2]
 from centbot.windows.hwcheck import full_hw_report
 from centbot.windows.install_state import SetupProgress
 

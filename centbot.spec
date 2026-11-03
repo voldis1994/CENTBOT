@@ -3,6 +3,13 @@
 
 block_cipher = None
 
+try:
+    from PyInstaller.utils.hooks import collect_data_files
+
+    certifi_datas = collect_data_files("certifi")
+except Exception:
+    certifi_datas = []
+
 a = Analysis(
     ['centbot/windows/exe_entry.py'],
     pathex=['.'],
@@ -12,26 +19,29 @@ a = Analysis(
         ('config/default.yaml', 'config'),
         ('config/local.yaml.example', 'config'),
         ('requirements.txt', '.'),
-    ],
+    ] + certifi_datas,
     hiddenimports=[
         'yaml',
         'flask',
         'requests',
+        'certifi',
         'psutil',
         'nacl',
         'eth_account',
         'centbot',
         'centbot.__main__',
+        'centbot.runtime_paths',
         'centbot.dashboard.app',
         'centbot.dashboard.portutil',
         'centbot.windows.launcher',
         'centbot.windows.setup',
         'centbot.windows.wizard',
         'centbot.core.engine',
+        'centbot.core.config',
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['centbot/windows/pyi_rth_centbot.py'],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

@@ -9,12 +9,20 @@ from typing import Any, Callable
 
 from flask import Flask, jsonify, render_template_string
 
-from centbot.core.config import ROOT
 from centbot.dashboard.portutil import pick_port
+from centbot.runtime_paths import bundle_root, install_root
 
-PANEL_PATH = Path(__file__).with_name("panel.html")
-DASHBOARD_HTML = PANEL_PATH.read_text(encoding="utf-8")
-DASHBOARD_STATE = ROOT / "data" / "runtime" / "dashboard.json"
+_panel_candidates = (
+    Path(__file__).with_name("panel.html"),
+    bundle_root() / "centbot" / "dashboard" / "panel.html",
+    install_root() / "centbot" / "dashboard" / "panel.html",
+)
+PANEL_PATH = next((p for p in _panel_candidates if p.exists()), _panel_candidates[0])
+DASHBOARD_HTML = PANEL_PATH.read_text(encoding="utf-8") if PANEL_PATH.exists() else "<h1>CENTBOT</h1>"
+
+
+def _dashboard_state_path() -> Path:
+    return install_root() / "data" / "runtime" / "dashboard.json"
 
 
 def create_dashboard(
@@ -58,22 +66,24 @@ def create_dashboard(
 
 
 def write_dashboard_state(host: str, port: int, *, extra: dict[str, Any] | None = None) -> Path:
-    DASHBOARD_STATE.parent.mkdir(parents=True, exist_ok=True)
+    path = _dashboard_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "host": host,
         "port": port,
         "url": f"http://{'127.0.0.1' if host in {'0.0.0.0', '::'} else host}:{port}/",
         **(extra or {}),
     }
-    DASHBOARD_STATE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return DASHBOARD_STATE
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
 
 
 def read_dashboard_state() -> dict[str, Any]:
-    if not DASHBOARD_STATE.exists():
+    path = _dashboard_state_path()
+    if not path.exists():
         return {}
     try:
-        return json.loads(DASHBOARD_STATE.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 

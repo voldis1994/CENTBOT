@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
+try:
+    from centbot.runtime_paths import install_root
+
+    ROOT = install_root()
+except Exception:  # noqa: BLE001
+    ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_STATE_PATH = ROOT / "data" / "setup" / "progress.json"
 

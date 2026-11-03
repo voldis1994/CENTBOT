@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from centbot.core.config import ROOT
+from centbot.runtime_paths import install_root
 from centbot.security.credentials import CredentialStore
 
 FORBIDDEN_KEYS = {
@@ -47,7 +47,7 @@ class SecretStore:
     """
 
     def __init__(self, root: Path | None = None):
-        self.root = Path(root) if root else ROOT / "data"
+        self.root = Path(root) if root else install_root() / "data"
         self.root.mkdir(parents=True, exist_ok=True)
         self._fernet = CredentialStore(self.root / "credentials.enc")
         self._dpapi_path = self.root / "secrets.dpapi"

@@ -12,7 +12,8 @@ from centbot.dashboard.portutil import can_bind, pick_port, port_open, wait_for_
 def test_write_and_read_dashboard_state(tmp_path: Path, monkeypatch):
     import centbot.dashboard.app as dash
 
-    monkeypatch.setattr(dash, "DASHBOARD_STATE", tmp_path / "dashboard.json")
+    monkeypatch.setenv("CENTBOT_ROOT", str(tmp_path))
+    monkeypatch.setattr(dash, "_dashboard_state_path", lambda: tmp_path / "data" / "runtime" / "dashboard.json")
     path = write_dashboard_state("127.0.0.1", 8799, extra={"bumped": True})
     assert path.exists()
     state = read_dashboard_state()
@@ -24,7 +25,8 @@ def test_write_and_read_dashboard_state(tmp_path: Path, monkeypatch):
 def test_start_dashboard_uses_free_port_when_preferred_busy(tmp_path: Path, monkeypatch):
     import centbot.dashboard.app as dash
 
-    monkeypatch.setattr(dash, "DASHBOARD_STATE", tmp_path / "dashboard.json")
+    monkeypatch.setenv("CENTBOT_ROOT", str(tmp_path))
+    monkeypatch.setattr(dash, "_dashboard_state_path", lambda: tmp_path / "data" / "runtime" / "dashboard.json")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", 0))

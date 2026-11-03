@@ -7,6 +7,10 @@ import json
 import sys
 from pathlib import Path
 
+from centbot.runtime_paths import bootstrap_runtime
+
+bootstrap_runtime()
+
 from centbot.core.config import Config
 from centbot.core.engine import CentBotEngine
 

@@ -260,7 +260,7 @@ def test_verify_core_ok_without_docker_android(tmp_path: Path, monkeypatch):
 def test_setup_incomplete_only_when_local_yaml_missing(tmp_path: Path, monkeypatch):
     from centbot.windows import launcher
 
-    monkeypatch.setattr(launcher, "ROOT", tmp_path)
+    monkeypatch.setenv("CENTBOT_ROOT", str(tmp_path))
     assert launcher.setup_incomplete() is True
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "local.yaml").write_text("system: {mode: live}\n", encoding="utf-8")
