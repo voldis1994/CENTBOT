@@ -959,11 +959,20 @@
 
       const integ = s.integrations || {};
       document.getElementById("platformsGrid").innerHTML = Object.keys(integ).length
-        ? Object.entries(integ).map(([name, info]) => `
-            <div class="worker">
+        ? Object.entries(integ).map(([name, info]) => {
+            let badge = info.ok ? "OK" : (info.offline ? "OFFLINE" : "Kļūda");
+            let detail = info.note || "";
+            if (info.error) {
+              const e = String(info.error);
+              detail = (e.includes("platform_offline") || e.includes("NXDOMAIN") || e.includes("11001"))
+                ? "API host nav sasniedzams (DNS) — nav CENTBOT kļūda"
+                : e.slice(0, 100);
+            }
+            return `<div class="worker">
               <div class="name">${esc(name)}</div>
-              <div class="detail">${info.ok ? "OK" : "Kļūda"} · paraugi ${info.sample_task_count || 0}${info.note ? " · " + esc(info.note) : ""}${info.error ? " · " + esc(String(info.error).slice(0,80)) : ""}</div>
-            </div>`).join("")
+              <div class="detail">${esc(badge)} · paraugi ${info.sample_task_count || 0}${detail ? " · " + esc(detail) : ""}</div>
+            </div>`;
+          }).join("")
         : `<div class="empty">Nav platformu</div>`;
 
       const and = s.android || {};

@@ -73,11 +73,15 @@ class WindowsSetup:
 
     def detect_components(self) -> dict[str, Any]:
         py = sys.executable
+        from centbot.windows.android_sdk import resolve_sdk_tools
+
+        tools = resolve_sdk_tools()
         return {
             "python": {"ok": True, "path": py, "version": sys.version.split()[0]},
             "git": {"ok": which("git") is not None, "path": which("git")},
-            "adb": {"ok": which("adb") is not None, "path": which("adb")},
-            "emulator": {"ok": which("emulator") is not None, "path": which("emulator")},
+            "adb": {"ok": bool(tools.get("adb")), "path": tools.get("adb")},
+            "emulator": {"ok": bool(tools.get("emulator")), "path": tools.get("emulator")},
+            "android_sdk_root": tools.get("sdk_root"),
             "docker": {"ok": which("docker") is not None, "path": which("docker")},
             "ollama": {"ok": which("ollama") is not None, "path": which("ollama")},
             "winget": {"ok": which("winget") is not None, "path": which("winget")},

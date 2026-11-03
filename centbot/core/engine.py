@@ -97,14 +97,20 @@ class CentBotEngine:
             self.journal,
             dry_run=config.is_dry_run(),
         )
+        try:
+            from centbot.windows.android_sdk import ensure_path_env, resolve_sdk_tools
+
+            _sdk_early = ensure_path_env(resolve_sdk_tools())
+        except Exception:  # noqa: BLE001
+            _sdk_early = {}
         self.executor = TaskExecutorRouter(
             browser_enabled=bool(config.get("browser.enabled", True)),
             android_enabled=bool(config.get("android.enabled", True)),
             headless=bool(config.get("browser.headless", True)),
             timeout_ms=int(config.get("browser.timeout_ms", 30000)),
             user_agent=str(config.get("browser.user_agent") or None),
-            adb_path=str(config.get("android.adb_path", "adb")),
-            emulator_path=str(config.get("android.emulator_path", "emulator")),
+            adb_path=str(config.get("android.adb_path") or _sdk_early.get("adb") or "adb"),
+            emulator_path=str(config.get("android.emulator_path") or _sdk_early.get("emulator") or "emulator"),
         )
         self.repair = ErrorRepair(max_attempts=2)
         if not sandbox_available():
@@ -146,9 +152,11 @@ class CentBotEngine:
             avds = ["CENTBOT_ANDROID_01", "CENTBOT_ANDROID_02", "CENTBOT_ANDROID_03", "CENTBOT_ANDROID_04"]
         android_enabled = bool(config.get("android.enabled", True))
         android_slots = int(config.get("android.max_emulators", 4) or 4) if android_enabled else 0
+        _emu_bin = str(config.get("android.emulator_path") or _sdk_early.get("emulator") or "emulator")
+        _adb_bin = str(config.get("android.adb_path") or _sdk_early.get("adb") or "adb")
         self.emulator = EmulatorManager(
-            emulator_path=str(config.get("android.emulator_path", "emulator")),
-            adb_path=str(config.get("android.adb_path", "adb")),
+            emulator_path=_emu_bin,
+            adb_path=_adb_bin,
             max_emulators=int(config.get("android.max_emulators", 4) or 4),
             default_avd=str(config.get("android.default_avd", "CENTBOT_ANDROID_01")),
             avds=[str(x) for x in avds],

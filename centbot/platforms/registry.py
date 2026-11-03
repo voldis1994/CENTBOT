@@ -140,7 +140,14 @@ def verify_integrations(platforms: dict[str, PlatformConnector]) -> dict[str, An
         except Exception as exc:  # noqa: BLE001
             entry["ok"] = False
             entry["live"] = False
-            entry["error"] = str(exc)
+            err = str(exc)
+            low = err.lower()
+            if any(x in low for x in ("platform_offline", "failed to resolve", "getaddrinfo", "11001", "nxdomain")):
+                entry["offline"] = True
+                entry["error"] = err[:180]
+                entry["note"] = "Platform host unreachable (DNS/offline) — not a local CENTBOT misconfig"
+            else:
+                entry["error"] = err[:220]
         report[name] = entry
     return report
 

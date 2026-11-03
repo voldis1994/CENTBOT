@@ -45,9 +45,17 @@ class BountyBookConnector(PlatformConnector):
             params["category"] = self.category
         try:
             data = self.client.get_json("/jobs", params=params)
-        except PlatformHTTPError:
+        except PlatformHTTPError as first:
             # Some deployments nest under /api
-            data = self.client.get_json("/api/jobs", params=params)
+            try:
+                data = self.client.get_json("/api/jobs", params=params)
+            except PlatformHTTPError:
+                # Host often NXDOMAIN / parked since late 2026 — surface clean offline, not raw pool dump
+                raise PlatformHTTPError(
+                    _offline_message(str(first)),
+                    status=first.status,
+                    body={"error": "platform_dns_or_unreachable", "host": self.client.base_url},
+                ) from first
         jobs = []
         if isinstance(data, list):
             jobs = data
@@ -210,15 +218,30 @@ class BountyBookConnector(PlatformConnector):
                 "sample_count": len(jobs),
             }
         except PlatformHTTPError as exc:
+            msg = _offline_message(str(exc))
             return {
                 "platform": self.name,
                 "enabled": self.enabled,
                 "configured": True,
                 "base_url": self.client.base_url,
                 "live": False,
-                "error": str(exc),
-                "hint": "Host may be unreachable from this network; set platforms.bountybook.base_url if mirrored.",
+                "offline": True,
+                "error": msg,
+                "hint": (
+                    "BountyBook API host is unreachable (often NXDOMAIN / parked domain). "
+                    "Other platforms keep working. Override platforms.bountybook.base_url if a mirror appears."
+                ),
+                "hint_lv": "BountyBook API pašlaik nav sasniedzams (DNS). BasedAgents/TaskMarket turpina strādāt.",
             }
+
+
+def _offline_message(raw: str) -> str:
+    low = (raw or "").lower()
+    if any(x in low for x in ("failed to resolve", "getaddrinfo", "name or service not known", "11001", "nxdomain")):
+        return "platform_offline_dns: api.bountybook.ai (NXDOMAIN/parked — not a CENTBOT bug)"
+    if "max retries exceeded" in low or "connection" in low:
+        return "platform_offline_unreachable: api.bountybook.ai"
+    return (raw or "platform_offline")[:180]
 
 
 def _map_cat(cat: Any) -> str:
