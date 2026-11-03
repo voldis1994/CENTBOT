@@ -68,6 +68,33 @@ class FinanceLedger:
             notes=notes,
         )
 
+    def _sum_kind(self, kind: str) -> float:
+        row = self.db.fetchone(
+            "SELECT COALESCE(SUM(amount_base),0) AS total FROM income "
+            "WHERE status IN ('recorded','received','approved') AND kind=?",
+            (kind,),
+        )
+        return float(row["total"] if row else 0)
+
+    def bank_balance(self) -> float:
+        """Fiat/bank rewards in base currency (excludes withdrawals/fees)."""
+        return self._sum_kind("bank")
+
+    def crypto_balance(self) -> float:
+        """Crypto rewards in base currency (excludes withdrawals/fees)."""
+        return self._sum_kind("crypto")
+
+    def balances(self) -> dict[str, float]:
+        """Separate bank/crypto balances plus total profit and cash after withdrawals."""
+        bank = self.bank_balance()
+        crypto = self.crypto_balance()
+        return {
+            "bank": bank,
+            "crypto": crypto,
+            "profit": self.total_profit(),
+            "cash": self.cash_balance(),
+        }
+
     def total_profit(self) -> float:
         """Earned profit: rewards minus fees/expenses. Withdrawals are transfers, not losses."""
         row = self.db.fetchone(

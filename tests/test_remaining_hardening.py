@@ -149,52 +149,74 @@ def test_verify_on_chain_uses_network_token(tmp_path: Path):
 
 
 def test_bank_payment_verification_separate_from_crypto():
+    from centbot.finance.bank_providers import StaticBankProvider
+
+    iban = "DE89370400440532013000"
     # Platform settled + reference alone is insufficient
     platform_only = verify_bank_payment(
         {
             "method": "sepa",
             "payment_status": "settled",
             "bank_reference": "SEPA-2026-998877",
-            "iban": "DE89 3704 0044 0532 0130 00",
+            "iban": iban,
             "amount": 120.5,
             "currency": "EUR",
             "provider": "wise",
-        }
+        },
+        expected_iban=iban,
+        expected_amount=120.5,
+        expected_currency="EUR",
     )
     assert platform_only["ok"] is False
-    assert platform_only["reason"] == "provider_evidence_required"
+    assert platform_only["reason"] == "bank_provider_not_configured"
 
+    provider = StaticBankProvider(
+        {
+            "SEPA-2026-998877": {
+                "id": "wise-tx-998877",
+                "status": "completed",
+                "amount": 120.5,
+                "currency": "EUR",
+                "destination_iban": iban,
+            }
+        }
+    )
     ok = verify_bank_payment(
         {
             "method": "sepa",
             "payment_status": "settled",
             "bank_reference": "SEPA-2026-998877",
-            "iban": "DE89 3704 0044 0532 0130 00",
             "amount": 120.5,
             "currency": "EUR",
             "provider": "wise",
-            "provider_evidence": {
-                "id": "wise-tx-998877",
+            "provider_evidence": {  # ignored — must come from API
+                "id": "platform-forged",
                 "status": "completed",
                 "amount": 120.5,
                 "currency": "EUR",
-                "destination_iban": "DE89370400440532013000",
+                "destination_iban": iban,
             },
-        }
+        },
+        expected_iban=iban,
+        expected_amount=120.5,
+        expected_currency="EUR",
+        provider_client=provider,
     )
     assert ok["ok"] is True
     assert ok["method"] == "bank"
     assert ok["provider_tx_id"] == "wise-tx-998877"
+    assert ok["source"] == "provider_api"
 
     crypto_on_bank = confirm_payment(
         {
             "method": "bank",
             "payment_status": "settled",
             "bank_reference": "SEPA-1",
-            "iban": "DE89370400440532013000",
             "amount": 1,
             "currency": "USDC",
-        }
+        },
+        expected_iban=iban,
+        provider_client=provider,
     )
     assert crypto_on_bank["ok"] is False
     assert crypto_on_bank["reason"] == "crypto_currency_on_bank_rail"
@@ -210,9 +232,8 @@ def test_bank_payment_verification_separate_from_crypto():
         },
         verify_chain=False,
     )
-    assert crypto["ok"] is True
-    assert crypto["method"] == "crypto"
-    assert crypto["network"] in {"optimism", "eip155:10"} or "optimism" in str(crypto.get("network"))
+    assert crypto["ok"] is False
+    assert crypto["reason"] == "on_chain_verification_required"
 
 
 def test_controlled_live_trial_report(tmp_path: Path):

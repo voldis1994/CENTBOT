@@ -91,11 +91,11 @@ def test_payment_requires_real_tx():
     no_recipient = confirm_payment(
         {"payment_status": "settled", "payment_tx_hash": "0x" + "cd" * 32, "amount": 5, "currency": "USDC"},
         require_tx=True,
-        verify_chain=False,
+        verify_chain=True,
     )
     assert no_recipient["ok"] is False
     assert no_recipient["reason"] == "recipient_required"
-    ok = confirm_payment(
+    platform_only = confirm_payment(
         {
             "payment_status": "settled",
             "payment_tx_hash": "0x" + "cd" * 32,
@@ -106,7 +106,8 @@ def test_payment_requires_real_tx():
         require_tx=True,
         verify_chain=False,
     )
-    assert ok["ok"] is True
+    assert platform_only["ok"] is False
+    assert platform_only["reason"] == "on_chain_verification_required"
 
 
 def test_input_download_writes_brief(tmp_path: Path):
@@ -250,9 +251,10 @@ def test_claim_execute_submit_paid_flow(tmp_path: Path):
             "finance": {
                 "reconcile_payments": True,
                 "require_tx_hash": True,
-                "verify_on_chain": False,  # chain mocked in dedicated security tests
+                "verify_on_chain": True,
                 "simulate_rewards_in_dry_run": False,
                 "crypto_wallet_public": "0x1111111111111111111111111111111111111111",
+                "min_confirmations": 1,
             },
             "browser": {"enabled": False},
             "android": {"enabled": False},
@@ -283,9 +285,36 @@ def test_claim_execute_submit_paid_flow(tmp_path: Path):
     assert result["ok"], result
     assert fake.submitted
 
-    # mark submitted then reconcile paid
+    # mark submitted then reconcile paid (on-chain evidence mocked)
     engine.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("submitted", utcnow(), row["id"]))
-    paid = engine.reconcile_payments()
+    wallet = "0x1111111111111111111111111111111111111111"
+    receipt = {
+        "status": "0x1",
+        "blockNumber": "0x10",
+        "logs": [
+            {
+                "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "topics": [
+                    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                    "0x" + "00" * 32,
+                    "0x" + "00" * 12 + wallet[2:],
+                ],
+                "data": hex(5_000_000),
+            }
+        ],
+    }
+
+    def fake_rpc(method, params, rpc_url):
+        if method == "eth_getTransactionReceipt":
+            return receipt
+        if method == "eth_blockNumber":
+            return "0x20"
+        raise AssertionError(method)
+
+    from unittest.mock import patch
+
+    with patch("centbot.finance.payment_verify._rpc", side_effect=fake_rpc):
+        paid = engine.reconcile_payments()
     assert paid and paid[0]["tx_ref"].startswith("0x")
     task = engine.db.fetchone("SELECT status FROM tasks WHERE id=?", (row["id"],))
     assert task["status"] == "paid"

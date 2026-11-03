@@ -52,7 +52,7 @@ def _engine(tmp_path: Path, *, mode: str = "live", auto_accept: bool = True) -> 
                 "reconcile_payments": True,
                 "crypto_wallet_public": "0x1111111111111111111111111111111111111111",
                 "bank_iban": "DE89370400440532013000",
-                "verify_on_chain": False,
+                "verify_on_chain": True,
             },
             "browser": {"enabled": False},
             "android": {"enabled": False},
@@ -202,11 +202,28 @@ def test_bank_vs_crypto_ledger_and_duplicates(tmp_path: Path):
 
     kinds = {r["kind"] for r in ledger.income_history()}
     assert "crypto" in kinds and "bank" in kinds
-    assert ledger.total_profit() == pytest.approx(25.0) or ledger.total_profit() > 0
+    bals = ledger.balances()
+    assert bals["bank"] > 0 and bals["crypto"] > 0
+    assert bals["profit"] == ledger.total_profit()
+    assert ledger.total_profit() > 0
 
 
 def test_engine_reconcile_routes_bank_to_bank_ledger(tmp_path: Path):
+    from centbot.finance.bank_providers import StaticBankProvider
+
     engine = _engine(tmp_path, mode="dry_run", auto_accept=False)
+    engine.config.set("finance.bank_iban", "DE89370400440532013000")
+    engine._bank_provider = StaticBankProvider(
+        {
+            "SEPA-ENG-1": {
+                "id": "wise-engine-1",
+                "status": "completed",
+                "amount": 50.0,
+                "currency": "EUR",
+                "destination_iban": "DE89370400440532013000",
+            }
+        }
+    )
     engine.db.execute(
         "INSERT INTO tasks(id, platform, external_id, title, description, category, status, reward_amount, reward_currency, priority, created_at, updated_at) "
         "VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))",
@@ -222,12 +239,11 @@ def test_engine_reconcile_routes_bank_to_bank_ledger(tmp_path: Path):
                 "method": "wise",
                 "payment_status": "settled",
                 "bank_reference": "SEPA-ENG-1",
-                "iban": "DE89370400440532013000",
                 "amount": 50.0,
                 "currency": "EUR",
                 "provider": "wise",
                 "provider_evidence": {
-                    "id": "wise-engine-1",
+                    "id": "platform-forged",
                     "status": "completed",
                     "amount": 50.0,
                     "currency": "EUR",
@@ -242,7 +258,6 @@ def test_engine_reconcile_routes_bank_to_bank_ledger(tmp_path: Path):
     assert row is not None
     assert row["kind"] == "bank"
     assert engine.ledger.record_bank_reward(amount=50, currency="EUR", platform="bankplat", tx_ref="wise-engine-1") is False
-    # Second reconcile must not double-book
     assert engine.reconcile_payments() == []
     engine.shutdown()
 
@@ -253,13 +268,15 @@ def test_bank_rejects_platform_settled_without_provider():
             "method": "bank",
             "payment_status": "settled",
             "bank_reference": "SEPA-ONLY-1",
-            "iban": "DE89370400440532013000",
             "amount": 10,
             "currency": "EUR",
-        }
+        },
+        expected_iban="DE89370400440532013000",
+        expected_amount=10,
+        expected_currency="EUR",
     )
     assert out["ok"] is False
-    assert out["reason"] == "provider_evidence_required"
+    assert out["reason"] == "bank_provider_not_configured"
 
 
 def test_independent_tests_are_task_specific_not_generic_add(tmp_path: Path):

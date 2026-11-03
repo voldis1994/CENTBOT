@@ -394,7 +394,14 @@ class CentBotEngine:
                 method_hint = str(nested.get("method") or nested.get("payment_method") or nested.get("rail") or "").lower()
             is_bank = method_hint in {"bank", "bank_transfer", "sepa", "wise", "paypal", "fiat"}
             wallet = str(self.config.get("finance.crypto_wallet_public") or "").strip() or None
-            if not is_bank and not wallet:
+            if is_bank:
+                if not expected_iban:
+                    self.journal.record("payment_check", "pending", task_id=row["id"], reason="recipient_iban_required")
+                    continue
+                if self._bank_provider is None:
+                    self.journal.record("payment_check", "pending", task_id=row["id"], reason="bank_provider_not_configured")
+                    continue
+            elif not wallet:
                 self.journal.record("payment_check", "pending", task_id=row["id"], reason="recipient_required")
                 continue
             confirmed = confirm_payment(

@@ -73,8 +73,15 @@ def main() -> int:
                     "currency": "EUR",
                 }
             ).get("reason"),
-            "crypto_requires_recipient": confirm_payment(
-                {"payment_status": "settled", "payment_tx_hash": "0x" + "ab" * 32, "network": "ethereum"},
+            "crypto_requires_on_chain": confirm_payment(
+                {
+                    "payment_status": "settled",
+                    "payment_tx_hash": "0x" + "ab" * 32,
+                    "to": "0x1111111111111111111111111111111111111111",
+                    "amount": 1,
+                    "currency": "USDC",
+                    "network": "ethereum",
+                },
                 verify_chain=False,
             ).get("reason"),
         }

@@ -46,7 +46,7 @@ def test_confirm_payment_requires_on_chain_when_enabled():
     assert result["reason"] in {"tx_not_found_or_pending", "rpc_error", "transfer_mismatch", "tx_reverted", "unmined"}
 
 
-def test_confirm_payment_platform_only_when_chain_disabled():
+def test_confirm_payment_rejects_platform_only_without_chain():
     result = confirm_payment(
         {
             "payment_status": "settled",
@@ -58,14 +58,15 @@ def test_confirm_payment_platform_only_when_chain_disabled():
         require_tx=True,
         verify_chain=False,
     )
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["reason"] == "on_chain_verification_required"
 
 
 def test_confirm_payment_requires_recipient():
     missing = confirm_payment(
         {"payment_status": "settled", "payment_tx_hash": "0x" + "cd" * 32, "amount": 5, "currency": "USDC"},
         require_tx=True,
-        verify_chain=False,
+        verify_chain=True,
     )
     assert missing["ok"] is False
     assert missing["reason"] == "recipient_required"
@@ -73,10 +74,12 @@ def test_confirm_payment_requires_recipient():
         {
             "payment_status": "settled",
             "payment_tx_hash": "0x" + "cd" * 32,
+            "amount": 5,
+            "currency": "USDC",
             "to": "not-an-address",
         },
         require_tx=True,
-        verify_chain=False,
+        verify_chain=True,
     )
     assert bad["ok"] is False
     assert bad["reason"] == "recipient_required"

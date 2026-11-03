@@ -1,8 +1,9 @@
-"""External bank/payment-provider evidence for fiat payouts.
+"""Independent bank/payment-provider verification for fiat payouts.
 
-Platform ``settled`` + a reference string is never enough. CENTBOT requires a
-provider (Wise / PayPal / SEPA statement API) confirmation that matches amount,
-currency, and destination.
+Platform ``settled``, reference numbers, and any evidence blob attached by the
+task platform are **never** accepted as proof. CENTBOT must fetch the transfer
+from a configured bank/payment-provider API and match IBAN, amount, currency,
+and provider transaction id.
 """
 
 from __future__ import annotations
@@ -27,13 +28,15 @@ class HttpBankProvider:
     """Generic REST provider: GET {base}/transfers/{reference} with Bearer token."""
 
     def __init__(self, base_url: str, api_key: str = "", *, timeout: float = 20.0):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
 
     def fetch_transfer(self, reference: str) -> dict[str, Any]:
         if not self.base_url:
             return {"ok": False, "error": "provider_base_url_missing"}
+        if not reference:
+            return {"ok": False, "error": "missing_reference"}
         headers = {"User-Agent": "CENTBOT/1.0", "Accept": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -50,6 +53,19 @@ class HttpBankProvider:
         except Exception as exc:  # noqa: BLE001
             log.warning("Bank provider fetch failed: %s", exc)
             return {"ok": False, "error": "provider_api_error", "detail": str(exc)}
+
+
+class StaticBankProvider:
+    """Test double that returns a canned independent provider ledger row."""
+
+    def __init__(self, transfers: dict[str, dict[str, Any]]):
+        self.transfers = {str(k): v for k, v in transfers.items()}
+
+    def fetch_transfer(self, reference: str) -> dict[str, Any]:
+        row = self.transfers.get(str(reference))
+        if not row:
+            return {"ok": False, "error": "provider_transfer_not_found"}
+        return {"ok": True, "transfer": row, "source": "provider_api"}
 
 
 def normalize_provider_transfer(raw: dict[str, Any]) -> dict[str, Any]:
@@ -82,61 +98,47 @@ def normalize_provider_transfer(raw: dict[str, Any]) -> dict[str, Any]:
         "amount": amount,
         "currency": str(currency or "").upper(),
         "destination_iban": dest,
-        "provider_tx_id": tx_id,
+        "provider_tx_id": str(tx_id) if tx_id is not None else None,
         "reference": reference,
         "raw": raw,
     }
 
 
-def evidence_from_payment_fields(fields: dict[str, Any]) -> dict[str, Any] | None:
-    """Accept only explicit provider evidence blobs — never platform status alone."""
-    raw = fields.get("raw") if isinstance(fields.get("raw"), dict) else {}
-    evidence = (
-        fields.get("provider_evidence")
-        or raw.get("provider_evidence")
-        or raw.get("provider_transfer")
-        or raw.get("bank_transfer")
-    )
-    if isinstance(evidence, dict) and evidence:
-        return evidence
-    return None
+def _norm_iban(value: str | None) -> str:
+    return "".join(ch for ch in str(value or "").upper() if not ch.isspace())
 
 
-def verify_provider_evidence(
+def verify_via_provider_api(
     *,
-    fields: dict[str, Any],
-    expected_amount: float | None,
-    expected_currency: str | None,
-    expected_iban: str | None,
-    provider_client: BankProviderClient | None = None,
+    reference: str,
+    expected_amount: float,
+    expected_currency: str,
+    expected_iban: str,
+    provider_client: BankProviderClient,
+    provider_name: str = "bank",
     amount_tolerance: float = 0.01,
-    allow_embedded_evidence: bool = True,
 ) -> dict[str, Any]:
-    """Confirm fiat funds via provider API and/or embedded provider ledger evidence."""
-    ref = str(fields.get("bank_reference") or fields.get("tx_hash") or "")
-    provider_name = str(fields.get("provider") or "bank").lower()
-
-    evidence = evidence_from_payment_fields(fields) if allow_embedded_evidence else None
-    source = "embedded_provider_evidence"
-    if evidence is None and provider_client is not None and ref:
-        fetched = provider_client.fetch_transfer(ref)
-        if not fetched.get("ok"):
-            return {
-                "ok": False,
-                "reason": fetched.get("error") or "provider_fetch_failed",
-                "method": "bank",
-                "provider": provider_name,
-            }
-        evidence = fetched.get("transfer")
-        source = "provider_api"
-    if not isinstance(evidence, dict) or not evidence:
+    """Fetch transfer from an independent provider API and match settlement fields."""
+    if provider_client is None:
         return {
             "ok": False,
-            "reason": "provider_evidence_required",
+            "reason": "bank_provider_not_configured",
+            "method": "bank",
+            "hint": "Configure finance.bank_provider_base_url (independent API).",
+        }
+
+    fetched = provider_client.fetch_transfer(reference)
+    if not fetched.get("ok"):
+        return {
+            "ok": False,
+            "reason": fetched.get("error") or "provider_fetch_failed",
             "method": "bank",
             "provider": provider_name,
-            "hint": "Platform settled+reference is insufficient; attach provider_evidence or configure bank provider API.",
         }
+
+    evidence = fetched.get("transfer")
+    if not isinstance(evidence, dict) or not evidence:
+        return {"ok": False, "reason": "provider_empty_transfer", "method": "bank", "provider": provider_name}
 
     transfer = normalize_provider_transfer(evidence)
     status = str(transfer.get("status") or "").lower()
@@ -147,7 +149,7 @@ def verify_provider_evidence(
             "method": "bank",
             "provider": provider_name,
             "provider_status": status,
-            "source": source,
+            "source": "provider_api",
         }
 
     try:
@@ -155,45 +157,44 @@ def verify_provider_evidence(
     except (TypeError, ValueError):
         amount = None
     if amount is None:
-        return {"ok": False, "reason": "provider_amount_missing", "method": "bank", "source": source}
+        return {"ok": False, "reason": "provider_amount_missing", "method": "bank", "source": "provider_api"}
 
-    currency = str(transfer.get("currency") or expected_currency or "").upper()
-    if expected_currency and currency and currency != str(expected_currency).upper():
+    currency = str(transfer.get("currency") or "").upper()
+    if not currency:
+        return {"ok": False, "reason": "provider_currency_missing", "method": "bank", "source": "provider_api"}
+    if currency != str(expected_currency).upper():
         return {
             "ok": False,
             "reason": "provider_currency_mismatch",
             "method": "bank",
             "expected": expected_currency,
             "observed": currency,
-            "source": source,
+            "source": "provider_api",
         }
-    if expected_amount is not None and abs(amount - float(expected_amount)) > amount_tolerance:
+    if abs(amount - float(expected_amount)) > amount_tolerance:
         return {
             "ok": False,
             "reason": "provider_amount_mismatch",
             "method": "bank",
             "expected": expected_amount,
             "observed": amount,
-            "source": source,
+            "source": "provider_api",
         }
 
     dest = transfer.get("destination_iban")
-    if expected_iban:
-        left = "".join(ch for ch in str(expected_iban).upper() if not ch.isspace())
-        right = "".join(ch for ch in str(dest or "").upper() if not ch.isspace())
-        if not right or left != right:
-            return {
-                "ok": False,
-                "reason": "provider_iban_mismatch",
-                "method": "bank",
-                "expected_iban": expected_iban,
-                "observed_iban": dest,
-                "source": source,
-            }
+    if _norm_iban(dest) != _norm_iban(expected_iban):
+        return {
+            "ok": False,
+            "reason": "provider_iban_mismatch",
+            "method": "bank",
+            "expected_iban": expected_iban,
+            "observed_iban": dest,
+            "source": "provider_api",
+        }
 
     provider_tx = transfer.get("provider_tx_id")
     if not provider_tx:
-        return {"ok": False, "reason": "provider_tx_id_required", "method": "bank", "source": source}
+        return {"ok": False, "reason": "provider_tx_id_required", "method": "bank", "source": "provider_api"}
 
     return {
         "ok": True,
@@ -201,10 +202,50 @@ def verify_provider_evidence(
         "method": "bank",
         "provider": provider_name,
         "provider_tx_id": provider_tx,
-        "bank_reference": ref,
+        "bank_reference": reference,
         "amount": amount,
         "currency": currency,
-        "iban": dest or expected_iban,
-        "source": source,
+        "iban": dest,
+        "source": "provider_api",
         "provider_status": status,
     }
+
+
+# Back-compat name used by older call sites — API-only, ignores platform blobs.
+def verify_provider_evidence(
+    *,
+    fields: dict[str, Any],
+    expected_amount: float | None,
+    expected_currency: str | None,
+    expected_iban: str | None,
+    provider_client: BankProviderClient | None = None,
+    amount_tolerance: float = 0.01,
+    allow_embedded_evidence: bool = False,  # noqa: ARG001 — intentionally ignored / always False
+) -> dict[str, Any]:
+    """API-only verification. Platform-embedded evidence is deliberately ignored."""
+    ref = str(fields.get("bank_reference") or fields.get("tx_hash") or "")
+    provider_name = str(fields.get("provider") or "bank").lower()
+    if expected_amount is None or not expected_currency or not expected_iban:
+        return {
+            "ok": False,
+            "reason": "bank_expected_fields_required",
+            "method": "bank",
+            "hint": "expected amount, currency, and IBAN are required",
+        }
+    if provider_client is None:
+        return {
+            "ok": False,
+            "reason": "bank_provider_not_configured",
+            "method": "bank",
+            "provider": provider_name,
+            "hint": "Platform settled/reference/provider_evidence are insufficient; configure an independent bank API.",
+        }
+    return verify_via_provider_api(
+        reference=ref,
+        expected_amount=float(expected_amount),
+        expected_currency=str(expected_currency),
+        expected_iban=str(expected_iban),
+        provider_client=provider_client,
+        provider_name=provider_name,
+        amount_tolerance=amount_tolerance,
+    )

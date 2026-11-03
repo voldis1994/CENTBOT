@@ -104,6 +104,9 @@ analysis:
 
 finance:
   crypto_wallet_public: ""  # public receive / payout address
+  bank_iban: ""  # expected fiat recipient IBAN (required for bank booking)
+  bank_provider_base_url: ""  # independent bank/payment API, e.g. https://api.wise.com/v1
+  bank_provider_api_key_env: CENTBOT_BANK_PROVIDER_API_KEY
   supported_currencies: [USD, EUR, GBP, USDC, USDT, BTC, ETH]
   default_currency: USD
   withdrawal_requires_manual_approval: true
@@ -112,7 +115,7 @@ finance:
   simulate_rewards_in_dry_run: false
   reconcile_payments: true
   require_tx_hash: true  # book income only with real settlement tx evidence
-  verify_on_chain: true  # Base RPC check: recipient, token, amount, confirmations
+  verify_on_chain: true  # chain check: recipient, token, amount, confirmations
   min_confirmations: 1
 
 android:

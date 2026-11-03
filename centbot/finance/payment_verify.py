@@ -338,20 +338,35 @@ def verify_bank_payment(
     provider_client: Any | None = None,
     require_provider_evidence: bool = True,
 ) -> dict[str, Any]:
-    """Verify bank payouts with provider evidence — platform settled alone is insufficient."""
-    from centbot.finance.bank_providers import verify_provider_evidence
+    """Verify bank payouts via an independent provider API only.
+
+    Platform ``settled``, reference numbers, and platform-attached evidence blobs
+    are never sufficient. Recipient IBAN, amount, currency, and provider tx id
+    must match the provider API response.
+    """
+    from centbot.finance.bank_providers import verify_via_provider_api
 
     fields = extract_payment_fields(pay_response)
+    # Drop any platform-supplied "evidence" so it cannot be mistaken for proof
+    fields.pop("provider_evidence", None)
+    if isinstance(fields.get("raw"), dict):
+        raw = dict(fields["raw"])
+        for key in ("provider_evidence", "provider_transfer", "bank_transfer", "evidence"):
+            raw.pop(key, None)
+        fields["raw"] = raw
+
     status = str(fields.get("status") or "").lower()
     settled = status in SETTLED or status.endswith("settled")
     if not settled:
         return {"ok": False, "reason": "not_settled", "method": "bank", **fields}
 
-    iban = expected_iban or fields.get("iban")
-    if iban and not is_iban(str(iban)):
-        return {"ok": False, "reason": "invalid_iban", "method": "bank", **fields}
-    if expected_iban and iban and re.sub(r"\s+", "", str(iban)).upper() != re.sub(r"\s+", "", expected_iban).upper():
-        return {"ok": False, "reason": "iban_mismatch", "method": "bank", **fields}
+    if not expected_iban or not is_iban(str(expected_iban)):
+        return {
+            "ok": False,
+            "reason": "recipient_iban_required",
+            "method": "bank",
+            "hint": "Configure finance.bank_iban; platform-reported IBAN is not trusted alone.",
+        }
 
     ref = fields.get("bank_reference") or fields.get("tx_hash")
     if not is_bank_reference(str(ref) if ref else None):
@@ -371,24 +386,21 @@ def verify_bank_payment(
     if not currency:
         return {"ok": False, "reason": "currency_required", "method": "bank", **fields}
 
-    if expected_amount is not None and abs(amount_f - float(expected_amount)) > amount_tolerance:
-        return {"ok": False, "reason": "amount_mismatch", "method": "bank", **fields}
-
-    # Platform settled + reference is NOT sufficient proof of received funds.
-    if not require_provider_evidence:
+    if not require_provider_evidence or provider_client is None:
         return {
             "ok": False,
-            "reason": "provider_evidence_required",
+            "reason": "bank_provider_not_configured",
             "method": "bank",
-            "hint": "refusing platform-only confirmation",
+            "hint": "Independent bank/payment-provider API required; platform data is not proof.",
         }
 
-    provider = verify_provider_evidence(
-        fields=fields,
+    provider = verify_via_provider_api(
+        reference=str(ref),
         expected_amount=amount_f,
         expected_currency=currency,
-        expected_iban=str(iban) if iban else expected_iban,
+        expected_iban=str(expected_iban),
         provider_client=provider_client,
+        provider_name=str(fields.get("provider") or "bank"),
         amount_tolerance=amount_tolerance,
     )
     if not provider.get("ok"):
@@ -400,7 +412,7 @@ def verify_bank_payment(
         "ok": True,
         "method": "bank",
         "bank_reference": ref,
-        "iban": provider.get("iban") or iban,
+        "iban": provider.get("iban") or expected_iban,
         "amount": provider.get("amount", amount_f),
         "currency": provider.get("currency") or currency,
         "status": status,
@@ -457,33 +469,39 @@ def confirm_payment(
     except (TypeError, ValueError):
         amount_f = None
 
+    if amount_f is None:
+        return {"ok": False, "reason": "amount_required", **fields, "to_address": wallet, "method": "crypto"}
+
     chain = resolve_chain(fields.get("network"))
-    if verify_chain and require_tx:
-        on_chain = verify_on_chain(
-            str(tx_hash),
-            expected_to=str(wallet),
-            expected_amount=amount_f,
-            currency=str(fields.get("currency") or "USDC"),
-            rpc_url=rpc_url or chain.get("rpc"),
-            network=chain.get("name"),
-            min_confirmations=min_confirmations,
-        )
-        if not on_chain.get("ok"):
-            return {**fields, **on_chain, "ok": False, "to_address": wallet, "method": "crypto"}
+    # On-chain verification is mandatory for crypto income booking.
+    if not verify_chain:
         return {
+            "ok": False,
+            "reason": "on_chain_verification_required",
             **fields,
-            **on_chain,
-            "ok": True,
-            "reason": "confirmed",
             "to_address": wallet,
             "method": "crypto",
+            "hint": "Platform settled/tx hash alone is not sufficient; enable finance.verify_on_chain.",
         }
+    if not require_tx:
+        return {"ok": False, "reason": "missing_or_invalid_tx", **fields, "method": "crypto"}
 
+    on_chain = verify_on_chain(
+        str(tx_hash),
+        expected_to=str(wallet),
+        expected_amount=amount_f,
+        currency=str(fields.get("currency") or "USDC"),
+        rpc_url=rpc_url or chain.get("rpc"),
+        network=chain.get("name"),
+        min_confirmations=min_confirmations,
+    )
+    if not on_chain.get("ok"):
+        return {**fields, **on_chain, "ok": False, "to_address": wallet, "method": "crypto"}
     return {
-        "ok": True,
-        "reason": "confirmed_platform_only",
         **fields,
+        **on_chain,
+        "ok": True,
+        "reason": "confirmed",
         "to_address": wallet,
         "method": "crypto",
-        "network": chain.get("name"),
     }
