@@ -32,7 +32,7 @@ def audit_config(config: Config) -> dict[str, Any]:
         blockers.append("finance.simulate_rewards_in_dry_run_must_be_false")
 
     if live and not auto_accept:
-        warnings.append("analysis.auto_accept_false_engine_will_force_true_on_claim")
+        warnings.append("analysis.auto_accept_false_claims_disabled")
     if live and not wallet:
         warnings.append("finance.crypto_wallet_public_missing_crypto_booking_will_fail")
     if live and not reconcile:

@@ -13,26 +13,59 @@ from centbot.quality.automatable import assess_automatable
 log = get_logger("centbot.analysis")
 
 CATEGORY_KEYWORDS = {
-    "csv": ["csv", "spreadsheet clean", "delimiter"],
-    "excel": ["excel", "xlsx", "workbook", "sheet"],
-    "json_xml": ["json", "xml", "transform"],
-    "pdf": ["pdf", "invoice", "extract text"],
-    "image": ["image", "png", "jpg", "screenshot", "vision"],
-    "text": ["summarize", "text", "copywriting", "rewrite"],
-    "programming": ["python", "function", "code", "unit-test", "implement"],
-    "browser": ["browser", "web", "scrape", "playwright"],
-    "android": ["android", "apk", "emulator", "adb"],
+    "csv": ["csv", "spreadsheet clean", "delimiter", ".csv"],
+    "excel": ["excel", "xlsx", "workbook", "sheet", ".xlsx", ".xls"],
+    "json_xml": ["json", "xml", "transform", ".json", ".xml", "yaml"],
+    "pdf": ["pdf", "invoice", "extract text", ".pdf"],
+    "image": ["image", "png", "jpg", "jpeg", "screenshot", "vision", "photo", "banner", "logo"],
+    "gif": ["gif", "animated gif", "animācij", ".gif"],
+    "video": ["video", "mp4", "webm", "short clip", "screen recording", ".mp4", ".webm"],
+    "text": ["summarize", "text", "copywriting", "rewrite", "blog", "article"],
+    "programming": ["python", "function", "code", "unit-test", "implement", "refactor", "api"],
+    "browser": ["browser", "web", "scrape", "playwright", "selenium", "crawl"],
+    "android": ["android", "apk", "emulator", "adb", "mobile app", "ui automator"],
+}
+
+# Content signals outweigh bare keyword collisions (e.g. "json" inside a prose essay).
+CATEGORY_CONTENT_SIGNALS = {
+    "android": [r"\bapk\b", r"\badb\b", r"android emulator", r"mobile ui", r"espresso"],
+    "browser": [r"playwright", r"selenium", r"scrape the page", r"fill the form", r"headless"],
+    "programming": [r"```", r"def\s+\w+\(", r"unit.?test", r"implement a function", r"pull request"],
+    "csv": [r"\.csv\b", r"comma[- ]separated", r"dedupe rows"],
+    "excel": [r"\.xlsx?\b", r"workbook", r"pivot table"],
+    "json_xml": [r"\.json\b", r"\.xml\b", r"json schema", r"xpath"],
+    "pdf": [r"\.pdf\b", r"extract text from pdf", r"invoice pdf"],
+    "gif": [r"\.gif\b", r"animated gif", r"create a gif"],
+    "video": [r"\.mp4\b", r"\.webm\b", r"short video", r"screen record"],
+    "image": [r"\.png\b", r"\.jpe?g\b", r"generate (an )?image", r"create (a )?logo", r"thumbnail"],
+    "text": [r"summarize", r"rewrite", r"proofread", r"blog post"],
 }
 
 
 def categorize(title: str, description: str, hint: str = "") -> str:
-    if hint and hint in CATEGORY_KEYWORDS:
+    """Classify by content signals first, then keywords — not keywords alone."""
+    known = set(CATEGORY_KEYWORDS) | set(CATEGORY_CONTENT_SIGNALS)
+    if hint and hint in known:
+        # Map gif/video onto image executor lane when no dedicated executor exists yet
+        if hint in {"gif", "video"}:
+            return "image"
         return hint
-    blob = f"{title} {description} {hint}".lower()
+    blob = f"{title}\n{description}\n{hint}".lower()
+    scores: dict[str, int] = {}
+    for cat, patterns in CATEGORY_CONTENT_SIGNALS.items():
+        for pat in patterns:
+            if re.search(pat, blob, re.I):
+                scores[cat] = scores.get(cat, 0) + 3
     for cat, words in CATEGORY_KEYWORDS.items():
-        if any(w in blob for w in words):
-            return cat
-    return "other"
+        for w in words:
+            if w in blob:
+                scores[cat] = scores.get(cat, 0) + 1
+    if not scores:
+        return "other"
+    best = max(scores, key=scores.get)  # type: ignore[arg-type]
+    if best in {"gif", "video"}:
+        return "image"
+    return best
 
 
 def complexity_score(title: str, description: str, category: str) -> float:

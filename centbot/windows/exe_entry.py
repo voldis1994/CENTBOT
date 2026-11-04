@@ -6,6 +6,7 @@ Built with: BUILD_EXE.bat  (PyInstaller onefile)
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -89,7 +90,18 @@ def main(argv: list[str] | None = None) -> int:
         except SystemExit:
             pass
 
-    report = full_start(skip_emulators="--skip-emulators" in argv)
+    force_emu = "--with-emulators" in argv or str(os.environ.get("CENTBOT_START_EMULATORS") or "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if force_emu:
+        skip_emu = False
+    elif "--skip-emulators" in argv:
+        skip_emu = True
+    else:
+        skip_emu = False  # honour android.enabled inside full_start / config
+    report = full_start(skip_emulators=skip_emu)
     print(json.dumps(report, indent=2, default=str))
     if report.get("dashboard"):
         print(f"\n[CENTBOT] Control panel: {report.get('dashboard')}")

@@ -603,8 +603,11 @@
 
       <section class="view" id="view-android">
         <section class="panel">
-          <div class="panel-head"><h3>Android emulatori</h3></div>
-          <pre id="androidBox" class="empty" style="white-space:pre-wrap;font-family:var(--mono);font-size:.8rem"></pre>
+          <div class="panel-head">
+            <h3>Android emulatori</h3>
+            <button type="button" class="btn" id="androidRecoverBtn" style="margin-left:auto">Atjaunot ADB/fleet</button>
+          </div>
+          <div id="androidBox" class="empty"></div>
         </section>
       </section>
 
@@ -1000,14 +1003,52 @@
 
       const and = s.android || {};
       const slots = and.slots || [];
+      const distWorkers = s.distributor?.workers || {};
       document.getElementById("androidBox").innerHTML = slots.length
-        ? slots.map(sl => `<div class="worker"><div class="name">${esc(sl.name)}</div><div class="detail">${sl.alive ? "Darbojas" : "Apturēts"} · slot ${sl.index}</div></div>`).join("")
-          + `<pre style="white-space:pre-wrap;font-family:var(--mono);font-size:.72rem;color:var(--muted)">${esc(JSON.stringify({devices: and.running_devices, max: and.max_emulators}, null, 2))}</pre>`
+        ? slots.map(sl => {
+            const wid = sl.worker || (`android_${sl.index}`);
+            const dw = distWorkers[wid] || {};
+            const task = sl.active_task || dw.active_task || "—";
+            const err = sl.error ? `<div style="color:var(--warn,#e0a15a)">Kļūda: ${esc(sl.error)}</div>` : "";
+            return `<div class="worker" style="display:flex;flex-direction:column;gap:.35rem">
+              <div class="name">${esc(sl.avd || sl.name)}</div>
+              <div class="detail">ADB: ${esc(sl.adb_id || sl.serial || "nav")} · ${esc(sl.connection || (sl.alive ? "connected" : "offline"))}</div>
+              <div class="detail">Worker: ${esc(wid)} · uzdevums: ${esc(String(task))}</div>
+              ${err}
+              <div style="display:flex;gap:.4rem">
+                <button type="button" class="btn android-start" data-avd="${esc(sl.avd || sl.name)}">Palaist</button>
+                <button type="button" class="btn android-stop" data-avd="${esc(sl.avd || sl.name)}">Apturēt</button>
+              </div>
+            </div>`;
+          }).join("")
+          + `<pre style="white-space:pre-wrap;font-family:var(--mono);font-size:.72rem;color:var(--muted);margin-top:.75rem">${esc(JSON.stringify({devices: and.running_devices, devices_detailed: and.devices_detailed, max: and.max_emulators, label: and.label}, null, 2))}</pre>`
         : `<pre style="white-space:pre-wrap;font-family:var(--mono);font-size:.8rem">${esc(JSON.stringify(and, null, 2))}</pre>`;
+      document.querySelectorAll(".android-start").forEach(btn => {
+        btn.onclick = async () => {
+          const avd = btn.getAttribute("data-avd");
+          await fetch("/api/android/start/" + encodeURIComponent(avd), { method: "POST" });
+          refresh();
+        };
+      });
+      document.querySelectorAll(".android-stop").forEach(btn => {
+        btn.onclick = async () => {
+          const avd = btn.getAttribute("data-avd");
+          await fetch("/api/android/stop/" + encodeURIComponent(avd), { method: "POST" });
+          refresh();
+        };
+      });
+      const recoverBtn = document.getElementById("androidRecoverBtn");
+      if (recoverBtn && !recoverBtn._bound) {
+        recoverBtn._bound = true;
+        recoverBtn.onclick = async () => {
+          await fetch("/api/android/recover", { method: "POST" });
+          refresh();
+        };
+      }
       const dist = s.distributor?.workers || {};
       if (Object.keys(dist).length) {
         document.getElementById("workersGrid").innerHTML = Object.entries(dist).map(([id, w]) =>
-          `<div class="worker"><div class="name">${esc(id)}</div><div class="detail">${esc(w.role)} · ${w.active}/${w.capacity}${w.serial ? " · " + esc(w.serial) : ""}</div></div>`
+          `<div class="worker"><div class="name">${esc(id)}</div><div class="detail">${esc(w.role)} · ${w.active}/${w.capacity}${w.avd ? " · " + esc(w.avd) : ""}${w.serial ? " · " + esc(w.serial) : ""}</div></div>`
         ).join("");
       }
       const st = s.settings || {};

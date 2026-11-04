@@ -110,10 +110,23 @@ def clear_stale_runtime() -> dict[str, Any]:
     return {"cleared_stale_pid": cleared, "running": already_running()}
 
 
-def start_emulators(*, adb: str = "adb", emulator: str = "emulator", count: int | None = None) -> dict[str, Any]:
+def start_emulators(
+    *,
+    adb: str = "adb",
+    emulator: str = "emulator",
+    count: int | None = None,
+    wait_boot: bool = True,
+    boot_timeout_s: float = 120.0,
+) -> dict[str, Any]:
     plan = plan_emulator_count()
     n = count if count is not None else int(plan["recommended"])
     names = AVD_NAMES[:n]
+    try:
+        from centbot.android.adb import ensure_server
+
+        ensure_server(adb)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         present = set(list_avds(emulator))
     except Exception as exc:  # noqa: BLE001
@@ -138,6 +151,7 @@ def start_emulators(*, adb: str = "adb", emulator: str = "emulator", count: int 
             "ok": False,
             "skipped": True,
             "reason": "no_centbot_avds",
+            "hint": "Run INSTALL_ANDROID.bat to create CENTBOT_ANDROID_01..04",
         }
     started: list[dict[str, Any]] = []
     for name in names:
@@ -153,19 +167,52 @@ def start_emulators(*, adb: str = "adb", emulator: str = "emulator", count: int 
             started.append({"avd": name, "ok": True, "pid": proc.pid})
         except OSError as exc:
             started.append({"avd": name, "ok": False, "error": str(exc)})
-    # Non-blocking: launch only — boot wait belongs to INSTALL_ANDROID / later cycles
     boots: list[dict[str, Any]] = []
-    time.sleep(1)
+    time.sleep(2)
     try:
-        from centbot.android.adb import devices
+        from centbot.android.adb import devices, devices_detailed, emulator_avd_name
 
         serials = devices(adb)
+        detailed = devices_detailed(adb)
     except Exception:  # noqa: BLE001
         serials = []
-    # Cap boot wait so START cannot hang for minutes when Android is half-installed
-    for serial in serials[: min(1, n)]:
-        boots.append(wait_for_boot(adb, serial=serial, timeout_s=15))
-    return {"planned": names, "started": started, "boots": boots, "devices": serials, "plan": plan}
+        detailed = []
+    if wait_boot:
+        # Wait for each newly started CENTBOT AVD (cap total wait)
+        per = max(15.0, boot_timeout_s / max(1, len([s for s in started if s.get("ok")])))
+        deadline = time.time() + boot_timeout_s
+        pending = {s["avd"] for s in started if s.get("ok")}
+        seen: set[str] = set()
+        while pending and time.time() < deadline:
+            try:
+                from centbot.android.adb import devices as _devices
+                from centbot.android.adb import emulator_avd_name as _avd
+
+                for serial in _devices(adb):
+                    if not str(serial).startswith("emulator-"):
+                        continue
+                    avd = _avd(adb, serial)
+                    if avd and avd in pending and serial not in seen:
+                        boot = wait_for_boot(adb, serial=serial, timeout_s=min(per, max(5.0, deadline - time.time())))
+                        boots.append({**boot, "avd": avd})
+                        seen.add(serial)
+                        if boot.get("ok"):
+                            pending.discard(avd)
+            except Exception:  # noqa: BLE001
+                pass
+            if pending:
+                time.sleep(2)
+        for avd in list(pending):
+            boots.append({"ok": False, "error": "boot_timeout", "avd": avd})
+    return {
+        "planned": names,
+        "started": started,
+        "boots": boots,
+        "devices": serials,
+        "devices_detailed": detailed,
+        "plan": plan,
+        "ok": any(s.get("ok") for s in started),
+    }
 
 
 def _emulator_avd_name(adb: str, serial: str) -> str | None:
@@ -392,19 +439,19 @@ def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
     config = Config()
     audit = audit_config(config)
     out: dict[str, Any] = {"consistency": audit}
-    # Env wins: CENTBOT_START_EMULATORS=1 forces emulators; START.bat defaults to skip
+    # Env: CENTBOT_START_EMULATORS=1 forces ON (wins over skip); =0 forces OFF
     env_emu = str(os.environ.get("CENTBOT_START_EMULATORS") or "").strip().lower()
-    if env_emu in {"0", "false", "no"}:
-        skip_emulators = True
-    elif env_emu in {"1", "true", "yes"}:
+    if env_emu in {"1", "true", "yes"}:
         skip_emulators = False
+    elif env_emu in {"0", "false", "no"}:
+        skip_emulators = True
     android_on = bool(config.get("android.enabled", True))
     if skip_emulators:
         out["emulators"] = {
             "ok": True,
             "skipped": True,
             "reason": "skip_emulators",
-            "hint": "PC LIVE starts without Android wait. Set CENTBOT_START_EMULATORS=1 to launch AVDs.",
+            "hint": "Emulators skipped. Set CENTBOT_START_EMULATORS=1 or pass --with-emulators.",
         }
     elif not skip_emulators and android_on:
         try:

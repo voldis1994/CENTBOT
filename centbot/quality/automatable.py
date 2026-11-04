@@ -101,5 +101,17 @@ def issues_indicate_non_automatable(issues: list[Any] | str | None) -> bool:
         "requires_own_public_page",
         "requires_nft_purchase",
         "requires_token_payout",
+        # Binary/file inputs that were never downloaded — retry won't create them
+        "missing_input:input.png",
+        "missing_input:input.jpg",
+        "missing_input:input.jpeg",
+        "missing_input:input.csv",
+        "missing_input:input.xlsx",
+        "missing_input:input.pdf",
+        "missing_input:input.json",
+        "missing_input:input.xml",
+        "missing_input:browser_steps",
+        "missing_input_not_repairable",
+        "generic_cannot_produce:",
     )
     return any(m in text_l for m in markers)

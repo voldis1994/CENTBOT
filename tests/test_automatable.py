@@ -81,3 +81,7 @@ def test_issues_indicate_non_automatable():
     ]
     assert issues_indicate_non_automatable(issues) is True
     assert issues_indicate_non_automatable(["exact_lines_expected_3_got_2"]) is False
+    assert issues_indicate_non_automatable("missing_input:input.png|input.jpg") is True
+    assert issues_indicate_non_automatable("missing_input:input.json|input.xml") is True
+    assert issues_indicate_non_automatable("generic_cannot_produce:image") is True
+    assert issues_indicate_non_automatable("missing_input:description|input.txt") is False

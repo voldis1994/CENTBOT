@@ -16,10 +16,17 @@ if not defined PY (
 echo.
 echo ============================================
 echo  CENTBOT Android SDK + AVD setup
-echo  1^) Google cmdline-tools  2^) platform-tools/emulator
-echo  3^) system-image android-30  4^) CENTBOT_ANDROID_01..N
+echo  0^) Java JDK 17+   1^) Google cmdline-tools
+echo  2^) platform-tools/emulator/sdkmanager/avdmanager
+echo  3^) system-image android-30  4^) CENTBOT_ANDROID_01..04
+echo  Existing AVDs are NEVER overwritten.
 echo ============================================
 echo.
+
+where java >nul 2>&1
+if errorlevel 1 (
+  echo [CENTBOT] Java not on PATH — installer will try Temurin JDK 17 via winget.
+)
 
 "%PY%" -m centbot.windows.android_sdk -y
 set "EC=%ERRORLEVEL%"
@@ -31,6 +38,14 @@ if exist "%LOCALAPPDATA%\Android\Sdk" (
   set "ANDROID_SDK_ROOT=%LOCALAPPDATA%\Android\Sdk"
   set "PATH=%LOCALAPPDATA%\Android\Sdk\platform-tools;%LOCALAPPDATA%\Android\Sdk\emulator;%LOCALAPPDATA%\Android\Sdk\cmdline-tools\latest\bin;%PATH%"
   echo [CENTBOT] ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
+  if exist "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" (
+    echo [CENTBOT] adb.exe OK
+    "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" version
+  )
+  if exist "%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe" (
+    echo [CENTBOT] emulator.exe OK
+    "%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe" -list-avds
+  )
 )
 
 if exist data\android.env (

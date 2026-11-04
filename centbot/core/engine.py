@@ -221,6 +221,17 @@ class CentBotEngine:
             self.db.add_alert("warning", "simulate_rewards_in_dry_run forced off — no synthetic income", source="finance")
         # BasedAgents PoW register is deferred — never block __init__/dashboard bind
         self._based_register_started = False
+        try:
+            from centbot.platforms.session_manager import PlatformSessionManager
+
+            self.sessions = PlatformSessionManager(
+                self.platforms,
+                credential_getter=self.credentials.get,
+                journal=self.journal,
+            )
+        except Exception:  # noqa: BLE001
+            self.sessions = None
+        self._submitted_task_ids: set[str] = set()
 
     def enter_controlled_mode(self) -> None:
         """Force dry_run and block all real accept/submit/payment booking side effects.
@@ -533,7 +544,12 @@ class CentBotEngine:
                 "income": income,
                 "last_bank": bank_income[0] if bank_income else None,
                 "last_crypto": crypto_income[0] if crypto_income else None,
+                # Only ledger-backed settled amounts count as received profit
                 "confirmed_payments_total": float(balances.get("bank", 0) or 0) + float(balances.get("crypto", 0) or 0),
+                "submitted_unpaid": counts.get("submitted", 0) + counts.get("verified", 0),
+                "paid_count": counts.get("paid", 0),
+                "pending_not_profit": True,
+                "note": "submitted/verified ≠ paid — peļņa tikai pēc apstiprināta maksājuma ledger ieraksta",
             },
             "system": snap,
             "alerts": alerts,
@@ -819,11 +835,29 @@ class CentBotEngine:
             if self._controlled_mode:
                 self.journal.record("submit_result", "blocked_controlled", task_id=task_id)
                 return {"ok": ok, "task_id": task_id, "evidence": str(evidence), "inputs": inputs, "submit": "blocked_controlled"}
+            # Never double-submit: prior successful platform submission blocks another attempt
+            prior = self.db.fetchone(
+                "SELECT id FROM submissions WHERE task_id=? AND status IN ('submitted','accepted','verified') LIMIT 1",
+                (task_id,),
+            )
+            if prior:
+                self.journal.record("submit_result", "skipped_duplicate", task_id=task_id, submission_id=prior["id"])
+                self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("submitted", utcnow(), task_id))
+                return {
+                    "ok": True,
+                    "task_id": task_id,
+                    "evidence": str(evidence),
+                    "inputs": inputs,
+                    "submit": {"ok": True, "skipped": True, "reason": "already_submitted"},
+                    "local_execution_ok": True,
+                    "platform_submit_ok": True,
+                }
             submit_payload = {
                 "summary": f"CENTBOT completed {task_row.get('title')}",
                 "evidence": str(evidence),
                 "output": result_out.get("output"),
                 "content": result_out.get("output"),
+                "artifacts": list(result_out.get("artifacts") or []),
             }
             task_obj = task_row.get("_task") or task_from_row(task_row)
             submit_row = {**task_row, "_task": task_obj}
@@ -874,7 +908,11 @@ class CentBotEngine:
             err_payload = outcome.get("error") or outcome.get("requirements") or "failed"
             non_auto = assess_automatable(task_row)
             if (not non_auto.get("automatable")) or issues_indicate_non_automatable(err_payload):
-                reason = str(non_auto.get("primary_reason") or "not_automatable")
+                err_text = str(err_payload)
+                if "missing_input" in err_text.lower() or "generic_cannot_produce:" in err_text.lower():
+                    reason = "missing_input_not_repairable"
+                else:
+                    reason = str(non_auto.get("primary_reason") or "not_automatable")
                 self.db.execute(
                     "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
                     ("skipped", utcnow(), task_id),
@@ -950,16 +988,28 @@ class CentBotEngine:
                     )
                     row["status"] = "dry_run_accepted"
                 else:
-                    # Live: always attempt real accept. Surface platform errors; never fake ok.
-                    # Force acceptor out of dry_run whenever intentional live (not controlled).
+                    # Live: attempt real accept only when analysis.auto_accept is true.
+                    # Never overwrite a user-set false → true (requirement #34).
                     self.acceptor.dry_run = False
                     self.submitter.dry_run = False
-                    self.config.set("analysis.auto_accept", True)
+                    if not bool(self.config.get("analysis.auto_accept", False)):
+                        continue
                     if isinstance(self.acceptor.config, dict):
-                        self.acceptor.config["auto_accept"] = True
+                        self.acceptor.config["auto_accept"] = bool(self.config.get("analysis.auto_accept", False))
                     # Skip platforms already known blocked this cycle (e.g. wallet_required spam)
                     blocked = getattr(self, "_accept_blocked_platforms", {}) or {}
                     if row.get("platform") in blocked:
+                        continue
+                    # Pre-accept gates: auth + executor + plan (requirement #35)
+                    gate = self._pre_accept_gate(row, task_obj)
+                    if not gate.get("ok"):
+                        self.journal.record(
+                            "accept",
+                            "blocked",
+                            task_id=row["id"],
+                            platform=row.get("platform"),
+                            reason=gate.get("reason"),
+                        )
                         continue
                     accept = self.acceptor.accept({**row, "status": "eligible", "_task": task_obj})
                     if not accept.get("ok") or accept.get("mode") == "dry_run":
@@ -1211,28 +1261,124 @@ class CentBotEngine:
                 self.journal.record("payment_received", "duplicate", task_id=row["id"], tx_ref=tx_ref, method=method)
         return updates
 
+    def _pre_accept_gate(self, row: dict[str, Any], task_obj: Any) -> dict[str, Any]:
+        """Refuse auto-accept without auth, matching executor, or a usable plan."""
+        platform = str(row.get("platform") or "")
+        conn = self.platforms.get(platform)
+        if not conn:
+            return {"ok": False, "reason": "unknown_platform"}
+        try:
+            rules = conn.check_automation_rules() if hasattr(conn, "check_automation_rules") else {}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": f"automation_check_failed:{exc}"}
+        if rules.get("automation_allowed") is False:
+            return {"ok": False, "reason": "automation_not_allowed"}
+        # Wallet platforms need signing key when their health says so
+        if platform in {"taskmarket", "bountybook"}:
+            signing = self._signing_wallet_status()
+            if not signing.get("loaded"):
+                return {"ok": False, "reason": "signing_wallet_missing"}
+        if platform == "basedagents":
+            kp = self.config.path_from("platforms.basedagents.keypair_path", "data/basedagents-keypair.json")
+            if not Path(str(kp)).exists():
+                return {"ok": False, "reason": "basedagents_identity_missing"}
+        category = str(row.get("category") or (getattr(task_obj, "category_hint", None) or "other"))
+        if category == "android" and not bool(self.config.get("android.enabled", True)):
+            return {"ok": False, "reason": "android_disabled"}
+        plan = self.planner.plan({**row, "category": category, "description": row.get("description") or getattr(task_obj, "description", "")})
+        steps = plan.get("steps") or []
+        if not steps:
+            return {"ok": False, "reason": "empty_execution_plan"}
+        row["_execution_plan"] = plan
+        return {"ok": True, "plan": plan}
+
+    def _recover_stuck_tasks(self) -> dict[str, Any]:
+        """Unstick stale running / track needs_repair / hold submit_failed (no double-submit)."""
+        from datetime import datetime, timezone
+
+        report: dict[str, Any] = {"running_reset": 0, "repair_requeued": 0, "submit_failed_held": 0}
+        now = datetime.now(timezone.utc)
+        stuck_running = self.db.fetchall("SELECT id, updated_at FROM tasks WHERE status='running'")
+        for row in stuck_running:
+            updated = str(row.get("updated_at") or "")
+            stale = True
+            try:
+                # Support both ...Z and offset-aware ISO
+                ts = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                stale = (now - ts).total_seconds() > 7200  # 2 hours
+            except ValueError:
+                stale = self._cycles > 0 and self._cycles % 30 == 0
+            if not stale:
+                continue
+            # Only reset if not currently active in the process pool
+            if row["id"] in set(self.pool.active_ids()):
+                continue
+            self.db.execute(
+                "UPDATE tasks SET status=?, updated_at=? WHERE id=? AND status='running'",
+                ("needs_repair", utcnow(), row["id"]),
+            )
+            report["running_reset"] += 1
+            self.journal.record("recovery", "running_to_needs_repair", task_id=row["id"])
+        # submit_failed: hold — never auto-resubmit (prevents duplicate platform submissions)
+        failed_subs = self.db.fetchall("SELECT id FROM tasks WHERE status='submit_failed'")
+        report["submit_failed_held"] = len(failed_subs)
+        repairs = self.db.fetchall("SELECT id FROM tasks WHERE status='needs_repair'")
+        report["repair_requeued"] = len(repairs)
+        return report
+
     def _sync_android_workers(self) -> None:
-        """Bind ADB serials to distributor when android.enabled; else zero Android capacity."""
+        """Recover CENTBOT emulators, wait for boot, bind AVD→android_N workers."""
         if not bool(self.config.get("android.enabled", True)):
             for i in range(1, 5):
                 wid = f"android_{i}"
                 if wid in self.distributor.workers:
                     self.distributor.workers[wid].capacity = 0
                     self.distributor.workers[wid].serial = None
+                    if hasattr(self.distributor.workers[wid], "avd"):
+                        self.distributor.workers[wid].avd = None
             return
         try:
-            from centbot.android.adb import devices
+            from centbot.windows.android_sdk import ensure_path_env, resolve_sdk_tools
 
-            serials = devices(str(self.config.get("android.adb_path", "adb")))
+            ensure_path_env(resolve_sdk_tools())
         except Exception:  # noqa: BLE001
-            serials = []
-        # Restore capacity for configured slots then bind
+            pass
         max_slots = int(self.config.get("android.max_emulators", 4) or 4)
-        for i in range(1, 5):
-            wid = f"android_{i}"
-            if wid in self.distributor.workers:
-                self.distributor.workers[wid].capacity = 1 if i <= max_slots else 0
-        self.distributor.bind_android_serials(serials)
+        # Recover when no CENTBOT devices are visible, or every 10 cycles (crash / Windows reboot)
+        try:
+            from centbot.android.adb import devices as _adb_devices
+
+            live = _adb_devices(str(self.config.get("android.adb_path") or self.emulator.adb_path))
+            need = (not live) or (self._cycles % 10 == 0)
+            if need and self.emulator.enabled:
+                recover = self.emulator.recover_fleet(restart_adb=not live or (self._cycles % 10 == 0))
+                self.journal.record(
+                    "android_recover",
+                    "ok" if recover.get("ok") else "warn",
+                    active=recover.get("active"),
+                    results_ok=sum(1 for r in (recover.get("results") or []) if r.get("ok")),
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.journal.record("android_recover", "error", error=str(exc))
+        bindings: list[dict[str, Any]] = []
+        try:
+            # verify_boot=True → capacity only after sys.boot_completed=1
+            bindings = self.emulator.bind_workers(verify_boot=True, boot_timeout_s=5.0)
+        except Exception as exc:  # noqa: BLE001
+            self.journal.record("android_bind", "error", error=str(exc))
+            bindings = []
+        # Cap to configured max_emulators by zeroing higher slots' boot flags
+        for b in bindings:
+            idx = int(str(b.get("worker") or "android_0").rsplit("_", 1)[-1] or 0)
+            if idx > max_slots:
+                b["serial"] = None
+                b["boot_completed"] = False
+                b["boot_ok"] = False
+                b["connected"] = False
+        # Strict AVD→worker only — never positional serial list (would map ANDROID_02 → android_1)
+        self.distributor.bind_android_slots(bindings)
 
     def cycle_once(self) -> dict[str, Any]:
         if self.emergency.is_active():
@@ -1245,6 +1391,14 @@ class CentBotEngine:
             self.journal.record("monitor_warning", "warn", message=msg)
 
         self._sync_android_workers()
+        self._recover_stuck_tasks()
+        if self.sessions and self._cycles % 5 == 0:
+            try:
+                self.sessions.refresh_all(
+                    auto_register_allowed=bool(self.config.get("discovery.auto_register_allowed", True))
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.journal.record("sessions", "error", error=str(exc))
         readiness = self.live_readiness() if self.config.is_live() else {"live": False, "ready": False}
         analyzed = self.discover_and_analyze()
         launched = self.schedule_eligible()
@@ -1321,6 +1475,9 @@ class CentBotEngine:
                 lambda: self.emergency.trigger("dashboard"),
                 ack_alert=self.acknowledge_alert,
                 update_settings=self.update_settings,
+                android_start=lambda avd: self.emulator.start(avd, wait_boot=True, boot_timeout_s=90),
+                android_stop=lambda avd: self.emulator.stop(avd),
+                android_recover=lambda: self.emulator.recover_fleet(restart_adb=True),
             )
             preferred = int(self.config.get("dashboard.port", 8787))
             host = str(self.config.get("dashboard.host", "127.0.0.1"))
