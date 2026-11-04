@@ -134,7 +134,7 @@ class BasedAgentsConnector(PlatformConnector):
             interpreted = interpret_platform_result(result, action="claim")
             return {**interpreted, "platform": self.name, "external_id": task.external_id}
         except PlatformHTTPError as exc:
-            return {"ok": False, "error": str(exc), "status": exc.status, "body": exc.body}
+            return _claim_http_error(exc, task.external_id)
 
     def submit_result(self, task: PlatformTask, payload: dict[str, Any]) -> dict[str, Any]:
         from centbot.platforms.response import interpret_platform_result
@@ -223,12 +223,56 @@ class BasedAgentsConnector(PlatformConnector):
             }
 
 
+def _claim_http_error(exc: PlatformHTTPError, external_id: str) -> dict[str, Any]:
+    body = exc.body
+    msg = ""
+    if isinstance(body, dict):
+        msg = str(body.get("error") or body.get("message") or "")
+    lower = f"{msg} {exc}".lower()
+    if exc.status == 409 or "already" in lower or "conflict" in lower or "claimed" in lower:
+        return {
+            "ok": False,
+            "error": "already_claimed",
+            "reason": "already_claimed",
+            "status": 409,
+            "body": body,
+            "hint": "Uzdevums jau claimots / konflikts — izlaižam.",
+            "external_id": external_id,
+            "platform": "basedagents",
+        }
+    if exc.status == 404:
+        return {
+            "ok": False,
+            "error": "task_gone",
+            "reason": "task_gone",
+            "status": 404,
+            "body": body,
+            "external_id": external_id,
+            "platform": "basedagents",
+        }
+    return {
+        "ok": False,
+        "error": msg or str(exc),
+        "status": exc.status,
+        "body": body,
+        "external_id": external_id,
+        "platform": "basedagents",
+    }
+
+
 def _map_category(cat: Any) -> str:
     c = str(cat or "").lower()
-    return {
+    mapped = {
         "research": "text",
         "code": "programming",
         "content": "text",
         "data": "json_xml",
         "automation": "browser",
-    }.get(c, c or "other")
+        "writing": "text",
+        "analysis": "text",
+        "general": "other",
+    }.get(c)
+    if mapped:
+        return mapped
+    # Unknown platform labels → generic (has fallback executor), not a dead category string
+    return c if c in {"csv", "excel", "json_xml", "pdf", "image", "text", "programming", "browser", "android"} else "other"

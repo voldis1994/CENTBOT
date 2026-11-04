@@ -914,6 +914,19 @@ class CentBotEngine:
                             alert_msg = (
                                 "TaskMarket: paraksts nesakrīt ar maka adresi — pārbaudi SET_ETH_KEY.bat."
                             )
+                        # Normalize raw HTTP 409 strings from older connectors
+                        err_l = str(err).lower()
+                        if accept.get("status") == 409 or "-> 409" in err_l or "already_claimed" in err_l:
+                            err = "already_claimed"
+                            alert_msg = (
+                                f"{row.get('platform')}: uzdevums jau claimots (409) — izlaižam, bez spam."
+                            )
+                        if str(err) == "already_claimed":
+                            alert_msg = (
+                                f"{row.get('platform')}: uzdevums jau claimots (409) — izlaižam, bez spam."
+                            )
+                        if str(err) == "task_gone":
+                            alert_msg = f"{row.get('platform')}: uzdevums vairs nav pieejams — izlaižam."
                         # Deduplicate identical open alerts
                         existing = self.db.fetchone(
                             "SELECT id FROM alerts WHERE acknowledged=0 AND message=? LIMIT 1",
@@ -926,6 +939,8 @@ class CentBotEngine:
                                 "stake_payment_required",
                                 "not_claim_mode",
                                 "hire_reserved",
+                                "already_claimed",
+                                "task_gone",
                             }
                             lvl = "info" if str(err) in soft else "warning"
                             self.db.add_alert(lvl, alert_msg, source="accept")
@@ -939,6 +954,8 @@ class CentBotEngine:
                             "stake_payment_required",
                             "not_claim_mode",
                             "hire_reserved",
+                            "already_claimed",
+                            "task_gone",
                         }
                         if str(err) in permanent or str(accept.get("reason") or "") in permanent:
                             # Soft outcomes — Izlaists, not Noraidīts

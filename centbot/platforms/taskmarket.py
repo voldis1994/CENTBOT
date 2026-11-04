@@ -404,4 +404,7 @@ def _hint_from_tags(tags: list[Any]) -> str:
         return "text"
     if "data" in joined:
         return "json_xml"
-    return "other"
+    if any(x in joined for x in ("web", "browser", "scrape", "autom")):
+        return "browser"
+    # Prefer text over dead "other" so PC worker can deliver
+    return "text"
