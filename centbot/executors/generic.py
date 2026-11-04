@@ -80,21 +80,48 @@ class GenericExecutor(Executor):
 
 
 def _required_deliverable(blob: str) -> dict[str, Any]:
+    """Refuse text-summary delivery only when the brief demands producing a concrete file.
+
+    Mentioning "png" while asking to summarise a missing attachment is OK for fallthrough.
+    "Create a PNG logo" / "generate animated gif" must not be faked as result.json.
+    """
     lower = blob.lower()
-    checks = [
-        ("apk", (r"\.apk\b", r"android package")),
-        ("image", (r"\.png\b", r"\.jpe?g\b", r"\bpng\b", r"\bjpg\b", r"generate an image", r"create a\w* logo", r"create an image", r"\blogo\b")),
+    create = bool(
+        re.search(
+            r"\b(create|generate|make|build|produce|draw|render|compose|design|izveido|ģenerē)\b",
+            lower,
+        )
+    )
+    # Produce-oriented media / binary asks
+    produce_checks = [
+        ("apk", (r"\.apk\b", r"android package", r"\bapk\b")),
+        ("image", (r"\.png\b", r"\.jpe?g\b", r"\bpng\b", r"\bjpg\b", r"\blogo\b", r"\bbanner\b", r"an image", r"a logo")),
         ("gif", (r"\.gif\b", r"animated gif", r"\bgif\b")),
-        ("video", (r"\.mp4\b", r"\.webm\b", r"short video", r"\bvideo\b")),
-        ("pdf", (r"\.pdf\b",)),
-        ("csv", (r"\.csv\b",)),
-        ("excel", (r"\.xlsx?\b",)),
-        ("json", (r"\.json\b", r"return json")),
-        ("xml", (r"\.xml\b",)),
-        ("code", (r"implement a function", r"unit test", r"pull request", r"\.py\b")),
+        ("video", (r"\.mp4\b", r"\.webm\b", r"short video", r"\bvideo\b", r"\bclip\b")),
+        ("pdf", (r"\.pdf\b", r"\bpdf\b")),
+        ("csv", (r"\.csv\b", r"\bcsv\b")),
+        ("excel", (r"\.xlsx?\b", r"\bexcel\b", r"\bworkbook\b")),
+        ("code", (r"implement a function", r"unit test", r"pull request", r"write (a )?python")),
     ]
-    for kind, needles in checks:
-        if any(re.search(n, lower) for n in needles):
-            # Creating new files is OK for text; binary kinds must not be faked as summary
-            return {"kind": kind, "matched": True}
+    if create:
+        for kind, needles in produce_checks:
+            if any(re.search(n, lower) for n in needles):
+                return {"kind": kind, "matched": True}
+    # Explicit "return/deliver <file>" without soft wording
+    if re.search(r"\b(deliver|return|submit|attach)\b.{0,40}\.(png|jpe?g|gif|mp4|webm|pdf|csv|xlsx?|apk)\b", lower):
+        ext = re.search(r"\.(png|jpe?g|gif|mp4|webm|pdf|csv|xlsx?|apk)\b", lower)
+        kind = {
+            "png": "image",
+            "jpg": "image",
+            "jpeg": "image",
+            "gif": "gif",
+            "mp4": "video",
+            "webm": "video",
+            "pdf": "pdf",
+            "csv": "csv",
+            "xlsx": "excel",
+            "xls": "excel",
+            "apk": "apk",
+        }.get((ext.group(1) if ext else ""), "image")
+        return {"kind": kind, "matched": True}
     return {"kind": "text", "matched": False}

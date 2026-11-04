@@ -394,7 +394,7 @@ def _guess_mime(path: str) -> str:
 
 
 def _required_media_kinds(task: Any | None, payload: dict[str, Any]) -> set[str]:
-    """Detect when the brief demands a concrete non-text deliverable."""
+    """Detect when the brief demands producing a concrete non-text deliverable."""
     import re
 
     parts = [
@@ -404,14 +404,18 @@ def _required_media_kinds(task: Any | None, payload: dict[str, Any]) -> set[str]
         str(payload.get("title") or ""),
         str(payload.get("description") or ""),
         str(payload.get("category") or ""),
-        str(payload.get("summary") or ""),
     ]
     raw = getattr(task, "raw", None) if task is not None else None
     if isinstance(raw, dict):
         parts.append(str(raw.get("task") or raw)[:2000])
     blob = " ".join(parts).lower()
+    create = bool(
+        re.search(r"\b(create|generate|make|build|produce|draw|render|deliver|submit|attach|izveido|ģenerē)\b", blob)
+    )
+    if not create:
+        return set()
     kinds: set[str] = set()
-    if re.search(r"\b(png|jpe?g|image|logo|banner|screenshot|attēl)\b|\.png\b|\.jpe?g\b", blob):
+    if re.search(r"\b(png|jpe?g|image|logo|banner|attēl)\b|\.png\b|\.jpe?g\b", blob):
         kinds.add("image")
     if re.search(r"\bgif\b|animated|\.gif\b", blob):
         kinds.add("gif")

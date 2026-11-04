@@ -908,7 +908,11 @@ class CentBotEngine:
             err_payload = outcome.get("error") or outcome.get("requirements") or "failed"
             non_auto = assess_automatable(task_row)
             if (not non_auto.get("automatable")) or issues_indicate_non_automatable(err_payload):
-                reason = str(non_auto.get("primary_reason") or "not_automatable")
+                err_text = str(err_payload)
+                if "missing_input" in err_text.lower() or "generic_cannot_produce:" in err_text.lower():
+                    reason = "missing_input_not_repairable"
+                else:
+                    reason = str(non_auto.get("primary_reason") or "not_automatable")
                 self.db.execute(
                     "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
                     ("skipped", utcnow(), task_id),
