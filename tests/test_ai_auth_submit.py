@@ -103,6 +103,37 @@ def test_taskmarket_artifacts_fallback_content():
     assert arts and arts[0]["fileName"] in {"result.json", "result.txt"}
 
 
+def test_taskmarket_refuses_text_fallback_for_media_tasks():
+    from centbot.platforms.base import PlatformTask
+
+    task = PlatformTask(
+        platform="taskmarket",
+        external_id="tm-1",
+        title="Create logo",
+        description="Generate a PNG banner and animated GIF for the launch",
+        reward_amount=5.0,
+        reward_currency="USDC",
+    )
+    # Summary-only payload must not become result.json
+    arts = _build_taskmarket_artifacts(
+        {"output": {"short_summary": "nice logo"}, "summary": "CENTBOT completed Create logo"},
+        task=task,
+    )
+    assert arts == []
+    # Real PNG is accepted
+    from pathlib import Path
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        png = Path(td) / "output.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        gif = Path(td) / "output.gif"
+        gif.write_bytes(b"GIF89a" + b"\x00" * 16)
+        arts2 = _build_taskmarket_artifacts({"artifacts": [str(png), str(gif)]}, task=task)
+        assert len(arts2) == 2
+        assert {a["fileName"] for a in arts2} == {"output.png", "output.gif"}
+
+
 def test_auto_accept_false_not_forced_in_consistency(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CENTBOT_ROOT", str(tmp_path))
     (tmp_path / "config").mkdir(parents=True)

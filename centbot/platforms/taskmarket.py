@@ -259,12 +259,12 @@ class TaskMarketConnector(PlatformConnector):
         """Submit per OpenAPI: workerAddress + artifacts[{fileName,mimeType,file}] + signature."""
         if not self.wallet:
             return {"ok": False, "error": "wallet_required"}
-        artifacts = _build_taskmarket_artifacts(payload)
+        artifacts = _build_taskmarket_artifacts(payload, task=task)
         if not artifacts:
             return {
                 "ok": False,
                 "error": "artifacts_required",
-                "hint": "TaskMarket API requires artifacts[] with fileName, mimeType, file (base64).",
+                "hint": "TaskMarket API requires real deliverable files — text summary result.json is not enough for media/binary tasks.",
             }
         msg = taskmarket_submit_message(task.external_id)
         sig = _sig_hex(self.wallet.sign_message(msg))
@@ -393,13 +393,77 @@ def _guess_mime(path: str) -> str:
     return mime or "application/octet-stream"
 
 
-def _build_taskmarket_artifacts(payload: dict[str, Any]) -> list[dict[str, str]]:
-    """Build OpenAPI artifacts array from local file paths or inline content."""
+def _required_media_kinds(task: Any | None, payload: dict[str, Any]) -> set[str]:
+    """Detect when the brief demands a concrete non-text deliverable."""
+    import re
+
+    parts = [
+        str(getattr(task, "title", "") or ""),
+        str(getattr(task, "description", "") or ""),
+        str(getattr(task, "category_hint", "") or ""),
+        str(payload.get("title") or ""),
+        str(payload.get("description") or ""),
+        str(payload.get("category") or ""),
+        str(payload.get("summary") or ""),
+    ]
+    raw = getattr(task, "raw", None) if task is not None else None
+    if isinstance(raw, dict):
+        parts.append(str(raw.get("task") or raw)[:2000])
+    blob = " ".join(parts).lower()
+    kinds: set[str] = set()
+    if re.search(r"\b(png|jpe?g|image|logo|banner|screenshot|attēl)\b|\.png\b|\.jpe?g\b", blob):
+        kinds.add("image")
+    if re.search(r"\bgif\b|animated|\.gif\b", blob):
+        kinds.add("gif")
+    if re.search(r"\b(video|mp4|webm|clip)\b|\.mp4\b|\.webm\b", blob):
+        kinds.add("video")
+    if re.search(r"\bpdf\b|\.pdf\b", blob):
+        kinds.add("pdf")
+    if re.search(r"\bapk\b|\.apk\b", blob):
+        kinds.add("apk")
+    if re.search(r"\b(xlsx?|csv)\b|\.xlsx?\b|\.csv\b", blob):
+        kinds.add("tabular")
+    return kinds
+
+
+_MEDIA_SUFFIX = {
+    "image": {".png", ".jpg", ".jpeg", ".webp"},
+    "gif": {".gif"},
+    "video": {".mp4", ".webm", ".mov"},
+    "pdf": {".pdf"},
+    "apk": {".apk", ".aab"},
+    "tabular": {".csv", ".xlsx", ".xls"},
+}
+
+
+def _artifacts_satisfy_media(artifacts: list[dict[str, str]], kinds: set[str]) -> bool:
+    if not kinds:
+        return True
+    names = " ".join(a.get("fileName", "").lower() for a in artifacts)
+    mimes = " ".join(a.get("mimeType", "").lower() for a in artifacts)
+    for kind in kinds:
+        suffixes = _MEDIA_SUFFIX.get(kind) or set()
+        if any(names.endswith(suf) or suf.lstrip(".") in names for suf in suffixes):
+            continue
+        if kind == "image" and any(m.startswith("image/") and "gif" not in m for m in mimes.split()):
+            continue
+        if kind == "gif" and ("image/gif" in mimes or names.endswith(".gif")):
+            continue
+        if kind == "video" and any(m.startswith("video/") for m in mimes.split()):
+            continue
+        if kind == "pdf" and "application/pdf" in mimes:
+            continue
+        return False
+    return True
+
+
+def _build_taskmarket_artifacts(payload: dict[str, Any], task: Any | None = None) -> list[dict[str, str]]:
+    """Build OpenAPI artifacts from real files. Never invent result.json for media tasks."""
     import base64
     from pathlib import Path
 
+    required_kinds = _required_media_kinds(task, payload)
     artifacts: list[dict[str, str]] = []
-    # Prefer explicit artifact file paths from execution
     paths: list[str] = []
     for key in ("artifacts", "files", "evidence_files"):
         val = payload.get(key)
@@ -409,21 +473,30 @@ def _build_taskmarket_artifacts(payload: dict[str, Any]) -> list[dict[str, str]]
             paths.append(val)
     evidence = payload.get("evidence")
     if evidence:
-        paths.append(str(evidence))
+        # evidence dir or file — collect concrete files, skip bare directories
+        ep = Path(str(evidence))
+        if ep.is_file():
+            paths.append(str(ep))
+        elif ep.is_dir():
+            for child in sorted(ep.rglob("*")):
+                if child.is_file() and child.stat().st_size > 0:
+                    paths.append(str(child))
     seen: set[str] = set()
     for raw in paths:
         p = Path(raw)
         if not p.is_file():
+            continue
+        # Skip prose-only placeholders when media is required
+        if required_kinds and p.name.lower() in {"result.json", "result.txt", "summary.txt", "unsupported_category.txt"}:
             continue
         key = str(p.resolve())
         if key in seen:
             continue
         seen.add(key)
         data = p.read_bytes()
-        # Skip empty / oversized (>~2MB inline safety)
         if not data or len(data) > 2_000_000:
             continue
-        role = "final" if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"} else "attachment"
+        role = "final" if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm", ".pdf", ".zip", ".apk"} else "attachment"
         if p.name.lower().startswith("thumb"):
             role = "preview"
         artifacts.append(
@@ -436,9 +509,17 @@ def _build_taskmarket_artifacts(payload: dict[str, Any]) -> list[dict[str, str]]
         )
         if len(artifacts) >= 20:
             break
+
     if artifacts:
+        if required_kinds and not _artifacts_satisfy_media(artifacts, required_kinds):
+            # Have files but none match required media type — refuse text-only pack
+            return []
         return artifacts
-    # Fallback: package textual content as result.json artifact (still satisfies artifacts: Required)
+
+    # No real files. Text fallback ONLY for pure text tasks — never for image/gif/video/etc.
+    if required_kinds:
+        return []
+
     import json
 
     content = payload.get("content")

@@ -1358,23 +1358,23 @@ class CentBotEngine:
                 )
         except Exception as exc:  # noqa: BLE001
             self.journal.record("android_recover", "error", error=str(exc))
-        bindings = []
+        bindings: list[dict[str, Any]] = []
         try:
-            bindings = self.emulator.bind_workers()
-        except Exception:  # noqa: BLE001
+            # verify_boot=True → capacity only after sys.boot_completed=1
+            bindings = self.emulator.bind_workers(verify_boot=True, boot_timeout_s=5.0)
+        except Exception as exc:  # noqa: BLE001
+            self.journal.record("android_bind", "error", error=str(exc))
             bindings = []
-        for i in range(1, 5):
-            wid = f"android_{i}"
-            if wid not in self.distributor.workers:
-                continue
-            slot = next((b for b in bindings if b.get("worker") == wid), None)
-            # Capacity tracks configured slots; serial/avd reflect live ADB binding
-            self.distributor.workers[wid].capacity = 1 if i <= max_slots else 0
-            self.distributor.workers[wid].serial = (slot or {}).get("serial")
-            self.distributor.workers[wid].avd = (slot or {}).get("avd")  # type: ignore[attr-defined]
-        # Prefer AVD-ordered serial list for legacy bind helper
-        ordered = [str(b["serial"]) for b in bindings if b.get("serial")]
-        self.distributor.bind_android_serials(ordered)
+        # Cap to configured max_emulators by zeroing higher slots' boot flags
+        for b in bindings:
+            idx = int(str(b.get("worker") or "android_0").rsplit("_", 1)[-1] or 0)
+            if idx > max_slots:
+                b["serial"] = None
+                b["boot_completed"] = False
+                b["boot_ok"] = False
+                b["connected"] = False
+        # Strict AVD→worker only — never positional serial list (would map ANDROID_02 → android_1)
+        self.distributor.bind_android_slots(bindings)
 
     def cycle_once(self) -> dict[str, Any]:
         if self.emergency.is_active():

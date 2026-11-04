@@ -159,9 +159,17 @@ def test_smart_distributor_no_duplicates_and_lanes():
     a_dup = dist.assign(t1)
     assert a_dup["ok"] is False and a_dup["error"] == "duplicate_task"
     dist.release("t1")
+    # Android assign requires AVD serial + boot_completed
+    dist.bind_android_slots(
+        [
+            {"avd": "CENTBOT_ANDROID_04", "serial": "emulator-5554", "boot_completed": True},
+            {"avd": "CENTBOT_ANDROID_02", "serial": "emulator-5556", "boot_completed": True},
+        ]
+    )
     t2 = {"id": "t2", "category": "android", "priority": 90}
     a2 = dist.assign(t2)
     assert a2["ok"] and a2["worker"] in {"android_4", "android_2", "android_3", "android_1"}
+    assert a2["worker"] == "android_4"  # priority >= 80 prefers reserve first
 
 
 def test_platform_registration_blocked_without_permission(tmp_path: Path):

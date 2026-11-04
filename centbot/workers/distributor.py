@@ -20,6 +20,15 @@ WORKER_ROLES = {
     "android_4": "priority_and_reserve",
 }
 
+# Strict fixed mapping — never remap by "first available serial"
+AVD_TO_WORKER = {
+    "CENTBOT_ANDROID_01": "android_1",
+    "CENTBOT_ANDROID_02": "android_2",
+    "CENTBOT_ANDROID_03": "android_3",
+    "CENTBOT_ANDROID_04": "android_4",
+}
+WORKER_TO_AVD = {v: k for k, v in AVD_TO_WORKER.items()}
+
 
 @dataclass
 class WorkerSlot:
@@ -30,6 +39,7 @@ class WorkerSlot:
     active: int = 0
     serial: str | None = None
     avd: str | None = None
+    boot_completed: bool = False
     load: float = 0.0
 
 
@@ -48,50 +58,71 @@ class SmartWorkDistributor:
         if not self.workers:
             self.workers = {
                 "pc": WorkerSlot("pc", WORKER_ROLES["pc"], "pc", capacity=self.max_pc),
-                "android_1": WorkerSlot("android_1", WORKER_ROLES["android_1"], "android"),
-                "android_2": WorkerSlot("android_2", WORKER_ROLES["android_2"], "android"),
-                "android_3": WorkerSlot("android_3", WORKER_ROLES["android_3"], "android"),
-                "android_4": WorkerSlot("android_4", WORKER_ROLES["android_4"], "android"),
+                "android_1": WorkerSlot("android_1", WORKER_ROLES["android_1"], "android", avd=WORKER_TO_AVD["android_1"]),
+                "android_2": WorkerSlot("android_2", WORKER_ROLES["android_2"], "android", avd=WORKER_TO_AVD["android_2"]),
+                "android_3": WorkerSlot("android_3", WORKER_ROLES["android_3"], "android", avd=WORKER_TO_AVD["android_3"]),
+                "android_4": WorkerSlot("android_4", WORKER_ROLES["android_4"], "android", avd=WORKER_TO_AVD["android_4"]),
             }
-            # Disable unused android slots when fewer AVDs available
             for i in range(self.android_slots + 1, 5):
                 wid = f"android_{i}"
                 if wid in self.workers:
                     self.workers[wid].capacity = 0
 
     def bind_android_serials(self, serials: list[str]) -> None:
-        with self._lock:
-            for i in range(1, 5):
-                wid = f"android_{i}"
-                if wid not in self.workers:
-                    continue
-                if i <= len(serials):
-                    self.workers[wid].serial = serials[i - 1]
-                    self.workers[wid].capacity = max(1, self.workers[wid].capacity)
-                # Do not clear avd/serial here when fewer serials — caller sets avd explicitly
+        """Deprecated positional bind — MUST NOT be used for live mapping.
+
+        Kept for back-compat tests; clears nothing and does not remapa by order.
+        Prefer ``bind_android_slots`` with explicit AVD names.
+        """
+        log.warning("bind_android_serials ignored — use bind_android_slots(AVD→worker) for strict mapping")
 
     def bind_android_slots(self, slots: list[dict[str, Any]]) -> None:
-        """Bind by AVD order: [{worker, avd, serial}, ...]."""
+        """Strict AVD→worker bind. Capacity only when serial + boot_completed."""
         with self._lock:
-            for slot in slots:
-                wid = str(slot.get("worker") or "")
-                if wid not in self.workers:
+            # Reset android slots first so stale serials cannot linger on wrong workers
+            for wid, w in self.workers.items():
+                if w.kind != "android":
                     continue
-                self.workers[wid].serial = slot.get("serial")
-                self.workers[wid].avd = slot.get("avd")
-                if slot.get("serial"):
-                    self.workers[wid].capacity = max(1, self.workers[wid].capacity)
+                expected_avd = WORKER_TO_AVD.get(wid)
+                w.avd = expected_avd
+                w.serial = None
+                w.boot_completed = False
+                w.capacity = 0
+
+            for slot in slots:
+                avd = str(slot.get("avd") or "")
+                wid = AVD_TO_WORKER.get(avd) or str(slot.get("worker") or "")
+                # Enforce AVD name wins over any caller-supplied worker id
+                if avd in AVD_TO_WORKER:
+                    wid = AVD_TO_WORKER[avd]
+                if wid not in self.workers or self.workers[wid].kind != "android":
+                    continue
+                # Reject mismatched worker/avd pairs
+                if avd and WORKER_TO_AVD.get(wid) and avd != WORKER_TO_AVD[wid]:
+                    log.error("Rejected AVD/worker mismatch: avd=%s worker=%s", avd, wid)
+                    continue
+                serial = slot.get("serial")
+                boot_ok = bool(slot.get("boot_completed") or slot.get("boot_ok"))
+                connected = bool(serial) and boot_ok
+                self.workers[wid].avd = avd or WORKER_TO_AVD.get(wid)
+                self.workers[wid].serial = str(serial) if serial else None
+                self.workers[wid].boot_completed = boot_ok
+                # Only assign work after ADB + sys.boot_completed=1
+                self.workers[wid].capacity = 1 if connected else 0
 
     def rebalance_roles(self) -> None:
         """Shift android roles under load: overloaded execution pulls from reserve."""
         with self._lock:
-            loads = {wid: w.active / max(1, w.capacity) for wid, w in self.workers.items() if w.kind == "android"}
+            loads = {
+                wid: w.active / max(1, w.capacity)
+                for wid, w in self.workers.items()
+                if w.kind == "android" and w.capacity > 0
+            }
             if not loads:
                 return
             busy = max(loads, key=loads.get)  # type: ignore[arg-type]
             idle = min(loads, key=loads.get)  # type: ignore[arg-type]
             if loads[busy] >= 1.0 and loads[idle] == 0 and idle != busy:
-                # Temporarily share execution role
                 self.workers[idle].role = self.workers[busy].role
                 log.info("Rebalanced %s role -> %s", idle, self.workers[busy].role)
 
@@ -133,7 +164,6 @@ class SmartWorkDistributor:
                     candidates = ["android_2", "android_3", "android_4", "android_1"]
             else:
                 candidates = ["pc"]
-                # If PC saturated and android has browser-capable reserve — keep on PC only for non-android
             chosen = None
             for wid in candidates:
                 w = self.workers.get(wid)
@@ -141,6 +171,10 @@ class SmartWorkDistributor:
                     continue
                 if w.active >= w.capacity:
                     continue
+                # Android: require live serial + boot_completed (capacity already gates, double-check)
+                if w.kind == "android":
+                    if not w.serial or not w.boot_completed:
+                        continue
                 if load["ram_percent"] > 92 and w.kind == "android":
                     continue
                 chosen = wid
@@ -155,6 +189,8 @@ class SmartWorkDistributor:
                 "worker": chosen,
                 "role": self.workers[chosen].role,
                 "serial": self.workers[chosen].serial,
+                "avd": self.workers[chosen].avd,
+                "boot_completed": self.workers[chosen].boot_completed,
                 "load": load,
             }
 
@@ -176,6 +212,7 @@ class SmartWorkDistributor:
                         "capacity": w.capacity,
                         "serial": w.serial,
                         "avd": w.avd,
+                        "boot_completed": w.boot_completed,
                     }
                     for wid, w in self.workers.items()
                 },

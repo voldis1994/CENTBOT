@@ -143,13 +143,61 @@ def test_distributor_binds_avd_slots():
     dist = SmartWorkDistributor(android_slots=4)
     dist.bind_android_slots(
         [
-            {"worker": "android_1", "avd": "CENTBOT_ANDROID_01", "serial": "emulator-5554"},
-            {"worker": "android_2", "avd": "CENTBOT_ANDROID_02", "serial": "emulator-5556"},
+            {"worker": "android_1", "avd": "CENTBOT_ANDROID_01", "serial": "emulator-5554", "boot_completed": True},
+            {"worker": "android_2", "avd": "CENTBOT_ANDROID_02", "serial": "emulator-5556", "boot_completed": True},
         ]
     )
     assert dist.workers["android_1"].serial == "emulator-5554"
     assert dist.workers["android_1"].avd == "CENTBOT_ANDROID_01"
+    assert dist.workers["android_1"].capacity == 1
     assert dist.workers["android_2"].avd == "CENTBOT_ANDROID_02"
+
+
+def test_strict_avd_worker_mapping_when_only_02_running():
+    """CENTBOT_ANDROID_02 must bind to android_2 — never android_1 by serial order."""
+    dist = SmartWorkDistributor(android_slots=4)
+    dist.bind_android_slots(
+        [
+            {
+                "worker": "android_1",  # wrong on purpose — AVD name must win
+                "avd": "CENTBOT_ANDROID_02",
+                "serial": "emulator-5556",
+                "boot_completed": True,
+            }
+        ]
+    )
+    assert dist.workers["android_1"].serial is None
+    assert dist.workers["android_1"].capacity == 0
+    assert dist.workers["android_2"].serial == "emulator-5556"
+    assert dist.workers["android_2"].avd == "CENTBOT_ANDROID_02"
+    assert dist.workers["android_2"].capacity == 1
+    # Positional helper must not remapa
+    dist.bind_android_serials(["emulator-5556"])
+    assert dist.workers["android_1"].serial is None
+    assert dist.workers["android_2"].serial == "emulator-5556"
+
+
+def test_no_android_assign_without_boot_completed():
+    dist = SmartWorkDistributor(android_slots=4)
+    dist.bind_android_slots(
+        [
+            {"avd": "CENTBOT_ANDROID_02", "serial": "emulator-5556", "boot_completed": False},
+        ]
+    )
+    assert dist.workers["android_2"].capacity == 0
+    out = dist.assign({"id": "t1", "category": "android", "priority": 50})
+    assert out.get("ok") is False
+    assert out.get("error") == "no_capacity"
+    # After boot, assignment works on android_2
+    dist.bind_android_slots(
+        [
+            {"avd": "CENTBOT_ANDROID_02", "serial": "emulator-5556", "boot_completed": True},
+        ]
+    )
+    out2 = dist.assign({"id": "t1", "category": "android", "priority": 50})
+    assert out2.get("ok") is True
+    assert out2.get("worker") == "android_2"
+    assert out2.get("avd") == "CENTBOT_ANDROID_02"
 
 
 def test_android_executor_create_path(tmp_path: Path, monkeypatch):

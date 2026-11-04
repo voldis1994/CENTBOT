@@ -268,17 +268,35 @@ class EmulatorManager:
                 restarted.append(self.start(name, wait_boot=True, boot_timeout_s=120))
         return {"ok": any(r.get("ok") for r in restarted), "adb": adb_report, "results": restarted, **self.status()}
 
-    def bind_workers(self) -> list[dict[str, Any]]:
-        """Ordered binding: CENTBOT_ANDROID_0N → android_N."""
+    def bind_workers(self, *, verify_boot: bool = True, boot_timeout_s: float = 8.0) -> list[dict[str, Any]]:
+        """Strict binding: CENTBOT_ANDROID_0N → android_N only (never by serial order).
+
+        ``boot_completed`` is True only after ``sys.boot_completed=1`` for that AVD's serial.
+        """
         mapping = self._refresh_serial_map()
         out = []
-        for i, name in enumerate(self.avds[:4], start=1):
+        for i, name in enumerate(DEFAULT_AVDS[:4], start=1):
+            # Always emit all four canonical AVD slots, even if max_emulators is lower
+            # (capacity gating happens in the distributor).
+            if name not in self.avds and i > self.max_emulators:
+                serial = None
+                boot_ok = False
+            else:
+                serial = mapping.get(name)
+                boot_ok = False
+                if serial and verify_boot:
+                    boot = wait_boot_completed(self.adb_path, serial=serial, timeout_s=boot_timeout_s, poll_s=1.0)
+                    boot_ok = bool(boot.get("ok"))
+                elif serial and not verify_boot:
+                    boot_ok = True
             out.append(
                 {
                     "worker": f"android_{i}",
                     "avd": name,
-                    "serial": mapping.get(name),
-                    "connected": name in mapping,
+                    "serial": serial,
+                    "connected": bool(serial),
+                    "boot_completed": boot_ok,
+                    "boot_ok": boot_ok,
                 }
             )
         return out
