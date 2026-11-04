@@ -35,11 +35,24 @@ def test_sandbox_module_public_api(tmp_path: Path):
 
 
 def test_executors_reject_missing_real_inputs(tmp_path: Path):
+    """File executors must not invent binary inputs; with a brief they fall through to generic."""
     router = TaskExecutorRouter(browser_enabled=True, android_enabled=False)
     for cat in ("csv", "excel", "json_xml", "pdf", "image"):
-        result = router.execute({"category": cat, "title": cat, "description": ""}, tmp_path / cat)
-        assert result.ok is False
-        assert "missing_input" in (result.error or "") or result.error == "android_runtime_unavailable"
+        # No title/description and no files → still fail (Generic cannot invent content)
+        blank = router.execute({"category": cat, "title": "", "description": ""}, tmp_path / f"{cat}-blank")
+        assert blank.ok is False
+        assert "missing_input" in (blank.error or "") or blank.error == "unsupported_category"
+        # Brief present but no binary → fall through to GenericExecutor (no fake csv/png)
+        with_brief = router.execute(
+            {
+                "category": cat,
+                "title": f"Notes about {cat}",
+                "description": f"Summarise the {cat} ask from the brief; no attachment provided.",
+            },
+            tmp_path / f"{cat}-brief",
+        )
+        assert with_brief.ok is True, with_brief.error
+        assert "missing_input" not in str(with_brief.error or "")
     # Programming without a problem statement cannot invent/verify a solution
     prog = router.execute({"category": "programming", "title": "x", "description": ""}, tmp_path / "programming")
     assert prog.ok is False

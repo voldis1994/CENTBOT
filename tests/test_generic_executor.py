@@ -39,6 +39,38 @@ def test_browser_without_steps_falls_back_to_generic(tmp_path: Path):
     assert "missing_input:browser_steps" not in str(result.error or "")
 
 
+def test_image_without_file_falls_back_to_generic(tmp_path: Path):
+    """Keyword-categorized image tasks often have no png/jpg after SSRF-safe download."""
+    router = TaskExecutorRouter(browser_enabled=False, android_enabled=False)
+    result = router.execute(
+        {
+            "category": "image",
+            "title": "Describe the product screenshot",
+            "description": "The brief mentions a png mockup but no file is attached. Summarise the ask.",
+            "platform": "taskmarket",
+        },
+        tmp_path / "image-work",
+    )
+    assert result.ok is True
+    assert "missing_input" not in str(result.error or "")
+    assert any(Path(a).exists() for a in result.artifacts)
+
+
+def test_json_xml_without_file_falls_back_to_generic(tmp_path: Path):
+    router = TaskExecutorRouter(browser_enabled=False, android_enabled=False)
+    result = router.execute(
+        {
+            "category": "json_xml",
+            "title": "Transform API payload notes",
+            "description": "Document the expected JSON shape from the brief. No input.json is provided.",
+            "platform": "basedagents",
+        },
+        tmp_path / "json-work",
+    )
+    assert result.ok is True
+    assert "missing_input" not in str(result.error or "")
+
+
 def test_basedagents_409_maps_to_already_claimed():
     exc = PlatformHTTPError("POST claim -> 409", status=409, body={"error": "conflict", "message": "already claimed"})
     r = _claim_http_error(exc, "task_abc")

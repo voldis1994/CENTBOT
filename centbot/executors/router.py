@@ -19,6 +19,12 @@ from centbot.executors.text_proc import TextProcessor
 from centbot.executors.testing import validate_artifacts, write_test_report
 
 
+# Specialized executors that need files/steps; without them, fall through to GenericExecutor.
+_MISSING_INPUT_FALLTHROUGH = frozenset(
+    {"csv", "excel", "json_xml", "pdf", "image", "text", "browser", "android"}
+)
+
+
 class TaskExecutorRouter:
     def __init__(
         self,
@@ -53,11 +59,13 @@ class TaskExecutorRouter:
             if not ex.can_handle(category):
                 continue
             result = ex.execute(task, workdir)
-            # Browser tasks without scripted steps → fall back to generic text delivery
+            # Mis-categorized briefs (keywords say image/json/…) often have no binary
+            # artifacts after SSRF-safe download. Fall through to GenericExecutor so
+            # LIVE delivers from the brief instead of rejection_repair spam.
             if (
                 not result.ok
-                and ex.category == "browser"
-                and str(result.error or "").startswith("missing_input:browser_steps")
+                and ex.category in _MISSING_INPUT_FALLTHROUGH
+                and str(result.error or "").startswith("missing_input:")
             ):
                 continue
             checks = validate_artifacts(result.to_dict())
