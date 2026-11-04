@@ -60,6 +60,16 @@ _NON_AUTO_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             re.I,
         ),
     ),
+    (
+        "requires_hosted_multiplayer",
+        re.compile(
+            r"multiplayer.{0,80}(agents?\s+and\s+humans|public url|http/?json api)|"
+            r"turn[- ]based.{0,40}(2\s*[-–]\s*4|\d+)\s*players|"
+            r"build (a |an )?(fun )?multiplayer (strategy )?game|"
+            r"public url.{0,60}(game|api).{0,40}(players|agents)",
+            re.I,
+        ),
+    ),
 ]
 
 
@@ -126,5 +136,6 @@ def issues_indicate_non_automatable(issues: list[Any] | str | None) -> bool:
         "photorealistic_media",
         "taskmarket_submit_payment_required",
         "payment required",
+        "requires_hosted_multiplayer",
     )
     return any(m in text_l for m in markers)

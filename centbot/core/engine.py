@@ -670,10 +670,24 @@ class CentBotEngine:
                 age = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
             except (TypeError, ValueError):
                 age = None
-        # Working = engine loop on AND a cycle completed within 3× interval (or just started)
+        # Heartbeat = engine loop advancing; real_work = workers actually executing tasks
         fresh = age is not None and age <= max(45.0, interval * 3)
         just_started = bool(self._running) and self._cycles == 0 and age is None
-        working = bool(self._running) and (fresh or just_started) and not self.emergency.is_active()
+        heartbeat = bool(self._running) and (fresh or just_started) and not self.emergency.is_active()
+        funnel = self._task_funnel()
+        last = dict(last_summary or {})
+        real_work = bool(
+            self.pool.active_count() > 0
+            or int(last.get("launched") or 0) > 0
+            or int(funnel.get("running") or 0) > 0 and self.pool.active_count() > 0
+        )
+        idle_reason = last.get("idle_reason")
+        if heartbeat and not real_work and not idle_reason:
+            idle_reason = self._idle_reason(
+                launched=int(last.get("launched") or 0),
+                funnel=funnel,
+                readiness=self.live_readiness(integrations) if self.config.is_live() else {"ready": True},
+            )
         ai_enabled = bool(self.config.get("ai.enabled", True))
         ollama_ok = bool(self.ollama.available())
         if ai_enabled and ollama_ok:
@@ -685,19 +699,35 @@ class CentBotEngine:
         android = self.emulator.status() if hasattr(self, "emulator") else {}
         android_ok = bool(android.get("running") or android.get("active") or (android.get("running_devices") or []))
         disc_ok = sum(1 for v in integrations.values() if isinstance(v, dict) and v.get("ok"))
-        if working:
-            label = "Sistēma strādā"
+        idle_lv = {
+            "emergency_stop": "Emergency stop aktīvs",
+            "auto_accept_off": "auto_accept=false — claimi bloķēti",
+            "orphan_running_recovering": "Iepriekšējais 'running' bez workera — atbrīvoju",
+            "no_claimable_tasks": "Nav claimojamu uzdevumu (Jobbi=indekss, stake/hire izlaisti)",
+            "eligible_waiting_accept": "Ir eligible — gaida veiksmīgu accept/claim",
+            "pool_full": "Worker pool pilns",
+            "waiting_next_claimable": "Gaida nākamo claimojamo uzdevumu",
+        }
+        if real_work:
+            label = "Reāls darbs notiek"
         elif self.emergency.is_active():
             label = "Emergency stop"
-        elif self._running:
-            label = "Dīkstāvē / gaida ciklu"
-        else:
+        elif not self._running:
             label = "Apturēta"
+        elif heartbeat and idle_reason:
+            if str(idle_reason).startswith("live_not_ready:"):
+                label = "LIVE nav gatavs claim"
+            else:
+                label = idle_lv.get(str(idle_reason), "Skenē — nav reāla darba")
+        elif heartbeat:
+            label = "Skenē — nav reāla darba"
+        else:
+            label = "Dīkstāvē / gaida ciklu"
         recent_actions = []
         for row in (self.db.fetchall(
             "SELECT id, title, platform, status, updated_at FROM tasks "
-            "WHERE status IN ('running','accepted','submitted','needs_repair','completed','failed','skipped') "
-            "ORDER BY updated_at DESC LIMIT 8"
+            "WHERE status IN ('running','accepted','submitted','needs_repair','completed','failed','skipped','submit_failed') "
+            "ORDER BY updated_at DESC LIMIT 12"
         ) or []):
             recent_actions.append(
                 {
@@ -708,15 +738,47 @@ class CentBotEngine:
                     "updated_at": row.get("updated_at"),
                 }
             )
+        # Recent journal lines that prove execute/accept/submit (not only scan/cycle)
+        work_events: list[dict[str, Any]] = []
+        journal_path = self.config.path_from("logging.directory", "logs") / "actions.jsonl"
+        if journal_path.exists():
+            try:
+                lines = journal_path.read_text(encoding="utf-8").splitlines()[-60:]
+                for line in reversed(lines):
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    action = str(obj.get("action") or "")
+                    if action in {
+                        "execute",
+                        "accept",
+                        "submit",
+                        "submit_result",
+                        "deliverables",
+                        "distribute",
+                        "recovery",
+                        "inputs",
+                    }:
+                        work_events.append(obj)
+                        if len(work_events) >= 14:
+                            break
+            except OSError:
+                pass
         return {
             "engine_running": bool(self._running),
-            "working": working,
+            "working": real_work,
+            "heartbeat": heartbeat,
+            "real_work": real_work,
             "label_lv": label,
+            "idle_reason": idle_reason,
+            "idle_reason_lv": idle_lv.get(str(idle_reason), str(idle_reason) if idle_reason else None),
             "cycles": int(self._cycles or 0),
             "last_cycle_at": last_at,
             "seconds_since_cycle": age,
             "cycle_interval_seconds": interval,
             "last_cycle": last_summary,
+            "funnel": funnel,
             "ai": {
                 "enabled": ai_enabled,
                 "ollama": ollama_ok,
@@ -731,7 +793,7 @@ class CentBotEngine:
                     "label": f"Discovery {disc_ok}/{len(integrations)}",
                 },
                 "workers": {
-                    "ok": self.pool.active_count() >= 0,
+                    "ok": self.pool.active_count() > 0 or int(funnel.get("eligible") or 0) == 0,
                     "label": f"Workers {self.pool.active_count()}/{int(self.config.get('system.max_parallel_tasks', 4) or 4)}",
                     "active": self.pool.active_count(),
                 },
@@ -745,6 +807,7 @@ class CentBotEngine:
                 },
             },
             "recent_actions": recent_actions,
+            "work_events": work_events,
             "tick": int(time.time()),
         }
 
@@ -1526,35 +1589,112 @@ class CentBotEngine:
         row["_execution_plan"] = plan
         return {"ok": True, "plan": plan}
 
+    def _task_funnel(self) -> dict[str, int]:
+        counts = {
+            r["status"]: int(r["c"] or 0)
+            for r in self.db.fetchall("SELECT status, COUNT(*) AS c FROM tasks GROUP BY status")
+        }
+        return {
+            "eligible": int(counts.get("eligible", 0)),
+            "accepted": int(counts.get("accepted", 0)),
+            "running": int(counts.get("running", 0)),
+            "needs_repair": int(counts.get("needs_repair", 0)),
+            "submitted": int(counts.get("submitted", 0)),
+            "skipped": int(counts.get("skipped", 0)),
+            "failed": int(counts.get("failed", 0)) + int(counts.get("submit_failed", 0)),
+            "pool_active": int(self.pool.active_count()),
+        }
+
+    def _idle_reason(
+        self,
+        *,
+        launched: int,
+        funnel: dict[str, int],
+        readiness: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Human-readable why this cycle did no real work (None = working)."""
+        if launched > 0 or self.pool.active_count() > 0:
+            return None
+        readiness = readiness or {}
+        if self.emergency.is_active():
+            return "emergency_stop"
+        if self.config.is_live() and not readiness.get("ready"):
+            blockers = readiness.get("blockers") or []
+            return "live_not_ready:" + ",".join(str(b) for b in blockers[:3])
+        if not bool(self.config.get("analysis.auto_accept", False)):
+            return "auto_accept_off"
+        if funnel.get("running", 0) > 0 and self.pool.active_count() == 0:
+            return "orphan_running_recovering"
+        if funnel.get("accepted", 0) + funnel.get("needs_repair", 0) + funnel.get("eligible", 0) == 0:
+            return "no_claimable_tasks"
+        if funnel.get("eligible", 0) > 0 and funnel.get("accepted", 0) == 0:
+            return "eligible_waiting_accept"
+        if not self.pool.has_capacity():
+            return "pool_full"
+        return "waiting_next_claimable"
+
     def _recover_stuck_tasks(self) -> dict[str, Any]:
-        """Unstick stale running / track needs_repair / hold submit_failed (no double-submit)."""
+        """Unstick orphan/stale running rows so LIVE does not look busy while workers=0."""
         from datetime import datetime, timezone
 
-        report: dict[str, Any] = {"running_reset": 0, "repair_requeued": 0, "submit_failed_held": 0}
+        report: dict[str, Any] = {
+            "running_reset": 0,
+            "orphan_reset": 0,
+            "repair_requeued": 0,
+            "submit_failed_held": 0,
+        }
         now = datetime.now(timezone.utc)
-        stuck_running = self.db.fetchall("SELECT id, updated_at FROM tasks WHERE status='running'")
+        active = set(self.pool.active_ids())
+        interval = float(self.config.get("system.cycle_interval_seconds", 30) or 30)
+        # Orphans (DB=running, not in this process pool): reclaim fast after START/crash
+        orphan_after = max(90.0, interval * 2)
+        # Truly long-running still in pool: only then use a long leash
+        stale_active_after = max(1800.0, float(self.config.get("system.task_soft_timeout_seconds", 1800) or 1800))
+        stuck_running = self.db.fetchall("SELECT id, title, platform, updated_at FROM tasks WHERE status='running'")
         for row in stuck_running:
+            tid = row["id"]
+            in_pool = tid in active
             updated = str(row.get("updated_at") or "")
-            stale = True
+            age_s: float | None = None
             try:
-                # Support both ...Z and offset-aware ISO
                 ts = datetime.fromisoformat(updated.replace("Z", "+00:00"))
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
-                stale = (now - ts).total_seconds() > 7200  # 2 hours
+                age_s = (now - ts).total_seconds()
             except ValueError:
-                stale = self._cycles > 0 and self._cycles % 30 == 0
-            if not stale:
-                continue
-            # Only reset if not currently active in the process pool
-            if row["id"] in set(self.pool.active_ids()):
-                continue
+                age_s = None
+            if in_pool:
+                stale = age_s is not None and age_s > stale_active_after
+                if not stale:
+                    continue
+                reason = "running_timeout_in_pool"
+            else:
+                # Immediately on first cycles after boot, or after orphan_after seconds
+                stale = (
+                    self._cycles <= 1
+                    or age_s is None
+                    or age_s > orphan_after
+                    or (self._cycles > 0 and self._cycles % 30 == 0 and age_s > interval)
+                )
+                if not stale:
+                    continue
+                reason = "running_orphan_not_in_pool"
             self.db.execute(
                 "UPDATE tasks SET status=?, updated_at=? WHERE id=? AND status='running'",
-                ("needs_repair", utcnow(), row["id"]),
+                ("needs_repair", utcnow(), tid),
             )
             report["running_reset"] += 1
-            self.journal.record("recovery", "running_to_needs_repair", task_id=row["id"])
+            if not in_pool:
+                report["orphan_reset"] += 1
+            self.journal.record(
+                "recovery",
+                "running_to_needs_repair",
+                task_id=tid,
+                reason=reason,
+                title=str(row.get("title") or "")[:80],
+                platform=row.get("platform"),
+                age_s=age_s,
+            )
         # submit_failed: hold — never auto-resubmit (prevents duplicate platform submissions)
         failed_subs = self.db.fetchall("SELECT id FROM tasks WHERE status='submit_failed'")
         report["submit_failed_held"] = len(failed_subs)
@@ -1647,6 +1787,8 @@ class CentBotEngine:
         self._cycles += 1
         self.db.set_state("cycles", self._cycles)
         balances = self.ledger.balances()
+        funnel = self._task_funnel()
+        idle_reason = self._idle_reason(launched=launched, funnel=funnel, readiness=readiness)
         summary = {
             "ok": True,
             "cycle": self._cycles,
@@ -1662,6 +1804,9 @@ class CentBotEngine:
             "live_ready": readiness.get("ready"),
             "live_blockers": readiness.get("blockers") if self.config.is_live() else [],
             "controlled": self._controlled_mode,
+            "funnel": funnel,
+            "idle_reason": idle_reason,
+            "real_work": bool(launched > 0 or self.pool.active_count() > 0),
         }
         self._last_cycle_summary = dict(summary)
         self._last_cycle_at = utcnow()
