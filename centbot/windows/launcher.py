@@ -114,7 +114,31 @@ def start_emulators(*, adb: str = "adb", emulator: str = "emulator", count: int 
     plan = plan_emulator_count()
     n = count if count is not None else int(plan["recommended"])
     names = AVD_NAMES[:n]
-    present = set(list_avds(emulator))
+    try:
+        present = set(list_avds(emulator))
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "planned": names,
+            "started": [],
+            "boots": [],
+            "devices": [],
+            "plan": plan,
+            "ok": False,
+            "skipped": True,
+            "error": f"list_avds_failed:{exc}",
+        }
+    if not present.intersection(names):
+        # No CENTBOT AVDs — do not sleep/wait_for_boot (that made START appear hung)
+        return {
+            "planned": names,
+            "started": [{"avd": n, "ok": False, "error": "avd_missing"} for n in names],
+            "boots": [],
+            "devices": [],
+            "plan": plan,
+            "ok": False,
+            "skipped": True,
+            "reason": "no_centbot_avds",
+        }
     started: list[dict[str, Any]] = []
     for name in names:
         if name not in present:
@@ -129,17 +153,18 @@ def start_emulators(*, adb: str = "adb", emulator: str = "emulator", count: int 
             started.append({"avd": name, "ok": True, "pid": proc.pid})
         except OSError as exc:
             started.append({"avd": name, "ok": False, "error": str(exc)})
-    # Wait for devices
+    # Non-blocking: launch only — boot wait belongs to INSTALL_ANDROID / later cycles
     boots: list[dict[str, Any]] = []
-    time.sleep(3)
+    time.sleep(1)
     try:
         from centbot.android.adb import devices
 
         serials = devices(adb)
     except Exception:  # noqa: BLE001
         serials = []
-    for i, serial in enumerate(serials[:n]):
-        boots.append(wait_for_boot(adb, serial=serial, timeout_s=120))
+    # Cap boot wait so START cannot hang for minutes when Android is half-installed
+    for serial in serials[: min(1, n)]:
+        boots.append(wait_for_boot(adb, serial=serial, timeout_s=15))
     return {"planned": names, "started": started, "boots": boots, "devices": serials, "plan": plan}
 
 
@@ -270,12 +295,13 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
 
     ready = False
     url = f"http://127.0.0.1:{preferred}/"
-    deadline = time.time() + 50
+    # Short wait — panel must open fast; heavy work (PoW/integrations) is async after bind
+    deadline = time.time() + 18
     while time.time() < deadline:
         dash = read_dashboard_state()
         port = int(dash.get("port") or preferred)
         probe_host = "127.0.0.1" if host in {"0.0.0.0", "::", "localhost"} else host
-        if wait_for_port(probe_host, port, timeout_s=0.6, interval_s=0.2):
+        if wait_for_port(probe_host, port, timeout_s=0.4, interval_s=0.15):
             url = str(dash.get("url") or f"http://{probe_host}:{port}/")
             ready = True
             state["dashboard"] = url
@@ -286,18 +312,20 @@ def start_engine(*, mode: str | None = None, open_dashboard: bool = True) -> dic
         # Engine died before binding
         if proc.poll() is not None:
             break
-        time.sleep(0.4)
+        time.sleep(0.25)
 
-    if open_dashboard and ready:
+    if open_dashboard:
+        # Open even if still warming — user sees the panel instead of a frozen START window
         _open_browser(url)
+    alive = proc.poll() is None
     return {
-        "ok": ready or proc.poll() is None,
+        "ok": ready or alive,
         "pid": proc.pid,
         "dashboard": url,
         "dashboard_ready": ready,
         "hint": None
         if ready
-        else "Dashboard not reachable yet — check logs/engine.stderr.log; port may still be starting",
+        else "Dashboard still starting — browser opened to default URL; see logs/engine.stderr.log if blank",
     }
 
 
@@ -364,8 +392,21 @@ def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
     config = Config()
     audit = audit_config(config)
     out: dict[str, Any] = {"consistency": audit}
+    # Env wins: CENTBOT_START_EMULATORS=1 forces emulators; START.bat defaults to skip
+    env_emu = str(os.environ.get("CENTBOT_START_EMULATORS") or "").strip().lower()
+    if env_emu in {"0", "false", "no"}:
+        skip_emulators = True
+    elif env_emu in {"1", "true", "yes"}:
+        skip_emulators = False
     android_on = bool(config.get("android.enabled", True))
-    if not skip_emulators and android_on:
+    if skip_emulators:
+        out["emulators"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "skip_emulators",
+            "hint": "PC LIVE starts without Android wait. Set CENTBOT_START_EMULATORS=1 to launch AVDs.",
+        }
+    elif not skip_emulators and android_on:
         try:
             from centbot.windows.android_sdk import ensure_path_env, resolve_sdk_tools
 

@@ -107,13 +107,20 @@ if not defined ANDROID_HOME if exist "%LOCALAPPDATA%\Android\Sdk\platform-tools\
 
 echo [CENTBOT] Starting LIVE with Python ^(exe disabled^)...
 echo [CENTBOT] TLS CA: %SSL_CERT_FILE%
-"%PY%" -m centbot.windows.start
+echo [CENTBOT] Fast start: Android emulator boot SKIPPED ^(PC claims OK^).
+echo [CENTBOT]            Emulators: set CENTBOT_START_EMULATORS=1 or START with --with-emulators
+REM Skip heavy pip/import noise — engine + panel should appear within ~15s
+"%PY%" -m centbot.windows.start --skip-emulators
 set "EC=%ERRORLEVEL%"
 if "%EC%"=="0" (
-  echo [CENTBOT] OK. Open panel URL from data\runtime\dashboard.json
+  echo [CENTBOT] OK. Panel: http://127.0.0.1:8787/  ^(also data\runtime\dashboard.json^)
 ) else (
   echo [CENTBOT] Start failed %EC%. See logs\engine.stderr.log
   echo [CENTBOT] Try: STOP.bat  then  FIX_NOW.bat  /  FULL_SYSTEM.bat
+  if exist logs\engine.stderr.log (
+    echo ---- last stderr lines ----
+    powershell -NoProfile -Command "Get-Content -Path 'logs\engine.stderr.log' -Tail 25 -ErrorAction SilentlyContinue"
+  )
   pause
 )
 ENDLOCAL
