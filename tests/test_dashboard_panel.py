@@ -68,14 +68,17 @@ def test_status_payload_has_panel_fields(tmp_path: Path):
     assert "ai" in st["pulse"]
     assert any(a["message"] == "Test alert" for a in st["alerts"])
     assert engine.acknowledge_alert(st["alerts"][0]["id"]) is True
-    # Simulate a live cycle so the control panel can show "Sistēma strādā"
+    # Cycle advances heartbeat; without launches, working/real_work stays false (honest idle)
     engine._running = True
     engine.cycle_once()
     pulse = engine.status()["pulse"]
-    assert pulse["working"] is True
+    assert pulse.get("heartbeat") is True
     assert pulse["cycles"] >= 1
     assert pulse["last_cycle_at"]
     assert "analyzed" in (pulse.get("last_cycle") or {})
+    assert "funnel" in pulse
+    assert pulse.get("real_work") is False
+    assert "nav reāla darba" in (pulse.get("label_lv") or "").lower() or pulse.get("idle_reason")
     app = create_dashboard(engine.status, lambda: None, ack_alert=engine.acknowledge_alert)
     client = app.test_client()
     r = client.get("/")
@@ -87,5 +90,5 @@ def test_status_payload_has_panel_fields(tmp_path: Path):
     body = s.get_json()
     assert body["mode"] == "dry_run"
     assert body["live"] is False
-    assert body["pulse"]["working"] is True
+    assert body["pulse"].get("heartbeat") is True
     engine.shutdown()

@@ -811,6 +811,14 @@
               <div class="cycle-bar"><span>Submit</span><strong id="pcSubmit">0</strong></div>
               <div class="cycle-bar"><span>Workers</span><strong id="pcWorkers">0</strong></div>
             </div>
+            <div class="panel-head" style="margin-top:1rem"><h3>Uzdevumu piltuve</h3></div>
+            <div class="cycle-bars" id="pulseFunnel">
+              <div class="cycle-bar"><span>Eligible</span><strong id="pfEligible">0</strong></div>
+              <div class="cycle-bar"><span>Accepted</span><strong id="pfAccepted">0</strong></div>
+              <div class="cycle-bar"><span>Running</span><strong id="pfRunning">0</strong></div>
+              <div class="cycle-bar"><span>Skipped</span><strong id="pfSkipped">0</strong></div>
+            </div>
+            <p class="honesty" id="pulseIdleHint">Ja Palaisti=0 un Workers=0 — tas ir skenēšana, nevis darbs.</p>
             <div class="panel-head" style="margin-top:1rem"><h3>AI statuss</h3></div>
             <div class="comp ok" id="pulseAiBox">
               <span class="lamp"></span>
@@ -1325,8 +1333,8 @@
     function setPulseBanner(el, pulse) {
       if (!el) return;
       el.classList.remove("working", "idle", "stopped");
-      if (pulse.working) el.classList.add("working");
-      else if (pulse.engine_running) el.classList.add("idle");
+      if (pulse.real_work || pulse.working) el.classList.add("working");
+      else if (pulse.heartbeat || pulse.engine_running) el.classList.add("idle");
       else el.classList.add("stopped");
     }
 
@@ -1334,14 +1342,16 @@
       const pulse = s.pulse || {};
       const ai = pulse.ai || s.ai || {};
       const last = pulse.last_cycle || {};
+      const funnel = pulse.funnel || last.funnel || {};
       setPulseBanner(document.getElementById("overviewPulse"), pulse);
       setPulseBanner(document.getElementById("pulseHero"), pulse);
       const title = pulse.label_lv || "Sistēmas statuss";
       const ageTxt = fmtAge(pulse.seconds_since_cycle);
-      const sub = pulse.working
-        ? `Engine cikls #${pulse.cycles || 0} · pēdējais pirms ${ageTxt} · režīms ${esc(s.mode || "—")}`
-        : (pulse.engine_running
-          ? `Engine ir ieslēgts, bet cikls vēl nav svaigs (pēdējais: ${ageTxt})`
+      const idleHint = pulse.idle_reason_lv || "";
+      const sub = pulse.real_work
+        ? `Reāls darbs · cikls #${pulse.cycles || 0} · pēdējais pirms ${ageTxt} · ${esc(s.mode || "—")}`
+        : (pulse.heartbeat || pulse.engine_running
+          ? `Skenēšana OK, bet darbs=0 · ${idleHint || "gaida claimojamu uzdevumu"} · cikls #${pulse.cycles || 0}`
           : "Engine nav run_forever — palaid START.bat");
       const ovTitle = document.getElementById("overviewPulseTitle");
       const ovSub = document.getElementById("overviewPulseSub");
@@ -1360,10 +1370,22 @@
       setTxt("pcLaunched", String(last.launched ?? 0));
       setTxt("pcSubmit", String(last.submissions ?? 0));
       setTxt("pcWorkers", String(last.active_workers ?? s.workers?.active ?? 0));
+      setTxt("pfEligible", String(funnel.eligible ?? 0));
+      setTxt("pfAccepted", String(funnel.accepted ?? 0));
+      setTxt("pfRunning", String(funnel.running ?? 0));
+      setTxt("pfSkipped", String(funnel.skipped ?? 0));
+      const idleEl = document.getElementById("pulseIdleHint");
+      if (idleEl) {
+        idleEl.textContent = pulse.real_work
+          ? "Workers aktīvi — zemāk redzami execute/accept/submit notikumi."
+          : (idleHint
+            ? `Kāpēc nav darba: ${idleHint}`
+            : "Ja Palaisti=0 un Workers=0 — tas ir skenēšana, nevis darbs.");
+      }
       const pill = document.getElementById("pulseWorkingPill");
       if (pill) {
-        pill.textContent = pulse.working ? "STRĀDĀ" : (pulse.engine_running ? "GAIDA" : "STOP");
-        pill.className = pulse.working ? "pill-ok" : (pulse.engine_running ? "pill-warn" : "pill-bad");
+        pill.textContent = pulse.real_work ? "DARBS" : (pulse.heartbeat || pulse.engine_running ? "SKENĒ" : "STOP");
+        pill.className = pulse.real_work ? "pill-ok" : (pulse.heartbeat || pulse.engine_running ? "pill-warn" : "pill-bad");
       }
       const comps = pulse.components || {};
       const box = document.getElementById("pulseComponents");
@@ -1385,21 +1407,24 @@
           ? (ai.ollama ? "Ollama pieejams — bagātināta analīze" : "Heuristika (Ollama nav — tas ir OK)")
           : "Izslēgts config — uzdevumi netiek AI plānoti");
       }
-      // Waveform: bump on new cycle tick / working state
-      const activity = pulse.working ? 18 : (pulse.engine_running ? 8 : 2);
-      const bump = (typeof last.analyzed === "number" ? Math.min(14, last.analyzed) : 0)
-        + (typeof last.launched === "number" ? Math.min(10, last.launched * 2) : 0);
+      // Waveform: green only when real work; amber = scan heartbeat
+      const activity = pulse.real_work ? 18 : ((pulse.heartbeat || pulse.engine_running) ? 8 : 2);
+      const bump = (typeof last.launched === "number" ? Math.min(14, last.launched * 3) : 0)
+        + (typeof last.active_workers === "number" ? Math.min(10, last.active_workers * 2) : 0);
       wavePoints.push(27 - activity - bump + Math.random() * 4);
       if (wavePoints.length > 40) wavePoints.shift();
       const pts = wavePoints.map((y, i) => `${(i / (wavePoints.length - 1)) * 400},${y}`).join(" ");
       const line = document.getElementById("pulseWaveLine");
       if (line) {
         line.setAttribute("points", pts);
-        line.setAttribute("stroke", pulse.working ? "#2ee59d" : (pulse.engine_running ? "#f0b429" : "#ff5d6c"));
+        line.setAttribute("stroke", pulse.real_work ? "#2ee59d" : ((pulse.heartbeat || pulse.engine_running) ? "#f0b429" : "#ff5d6c"));
       }
       const fresh = (pulse.tick || 0) !== lastPulseTick;
       lastPulseTick = pulse.tick || 0;
-      const journal = (s.journal || []).slice().reverse().slice(0, 18);
+      const workEv = pulse.work_events || [];
+      const journal = workEv.length
+        ? workEv
+        : (s.journal || []).filter(j => !["cycle","platform_discover","android_recover","scan-error","fx"].includes(String(j.action||""))).slice().reverse().slice(0, 18);
       const ticker = document.getElementById("pulseTicker");
       if (ticker) {
         ticker.innerHTML = journal.length
@@ -1407,11 +1432,11 @@
               const t = String(j.ts || j.time || j.created_at || "").slice(11, 19) || "—";
               const action = j.action || j.event || j.type || "event";
               const status = j.status || j.result || "";
-              const extra = j.task_id ? ` · task ${j.task_id}` : (j.message ? ` · ${String(j.message).slice(0, 60)}` : "");
+              const extra = j.task_id ? ` · task ${j.task_id}` : (j.message ? ` · ${String(j.message).slice(0, 60)}` : (j.reason ? ` · ${String(j.reason).slice(0, 48)}` : ""));
               const cls = status === "error" || status === "failed" ? "err" : (status === "warn" || status === "warning" ? "warn" : "ok");
               return `<div class="ticker-item ${fresh && idx < 3 ? "fresh" : ""}"><time>${esc(t)}</time><div><span class="who">${esc(action)}</span> <span class="${cls}">${esc(status)}</span>${esc(extra)}</div><div>${esc(j.platform || "")}</div></div>`;
             }).join("")
-          : `<div class="empty">Vēl nav žurnāla ierakstu — pēc START.bat te parādīsies cikli</div>`;
+          : `<div class="empty">Vēl nav execute/accept/submit — tikai scan netiek rādīts kā darbs</div>`;
       }
       const actions = pulse.recent_actions || [];
       const actBox = document.getElementById("pulseActions");
