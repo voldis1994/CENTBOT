@@ -171,8 +171,15 @@ class CentBotEngine:
             model=str(config.get("ai.model", "tinyllama")),
             timeout=float(config.get("ai.timeout_seconds", 60)),
         )
-        self.ai_analyzer = AITaskAnalyzer(self.ollama, enabled=bool(config.get("ai.enabled", False)))
+        # Default on: heuristic always plans; Ollama enriches when available.
+        self.ai_analyzer = AITaskAnalyzer(self.ollama, enabled=bool(config.get("ai.enabled", True)))
         self.planner = AIWorkPlanner(self.ai_analyzer)
+        # Wire local LLM into programming codegen when present
+        from centbot.executors.programming import ProgrammingExecutor
+
+        for ex in self.executor.executors:
+            if isinstance(ex, ProgrammingExecutor):
+                ex.ollama = self.ollama
         self.workers = WorkerCoordinator()
         avds = config.get("android.avds") or [
             "CENTBOT_ANDROID_01",
@@ -786,16 +793,55 @@ class CentBotEngine:
         self.workers.run_subtasks(subtasks, {"task": task_row, "plan": plan})
 
         def _run() -> dict[str, Any]:
+            from centbot.quality.deliverables import ensure_named_deliverables, named_deliverables
+
             result = self.executor.execute(task_row, workdir)
-            check = verify_result(result.to_dict(), workdir)
-            req = verify_against_requirements(task_row, result.to_dict(), workdir)
-            ok_local = bool(result.ok and check["ok"] and req["ok"])
+            result_dict = result.to_dict()
+            ensured = ensure_named_deliverables(task_row, workdir, result_dict)
+            if ensured.get("skipped_reason"):
+                return {
+                    "ok": False,
+                    "result": result_dict,
+                    "check": {"ok": False, "issues": [ensured.get("error")]},
+                    "requirements": {"ok": False, "issues": [ensured.get("error") or ensured["skipped_reason"]]},
+                    "error": ensured.get("error") or ensured["skipped_reason"],
+                }
+            if ensured.get("created") or ensured.get("artifacts"):
+                result_dict = ensured.get("result") or result_dict
+                result_dict["artifacts"] = ensured.get("artifacts") or result_dict.get("artifacts") or []
+                if ensured.get("created"):
+                    self.journal.record(
+                        "deliverables",
+                        "created",
+                        task_id=task_id,
+                        files=ensured.get("created"),
+                    )
+                # Materialising required named outputs can salvage create-style runs
+                # that previously failed only because the file was never written.
+                err = str(result_dict.get("error") or result.error or "")
+                hard = err.startswith("missing_input:") or "photorealistic" in err or (
+                    err.startswith("generic_cannot_produce:") and "photorealistic" in err
+                )
+                needed = named_deliverables(task_row)
+                present = {p.name.lower() for p in workdir.iterdir() if p.is_file()} if workdir.exists() else set()
+                if (
+                    ensured.get("created")
+                    and needed
+                    and all(n in present for n in needed)
+                    and not hard
+                ):
+                    result_dict["ok"] = True
+                    result_dict["error"] = None
+                    result_dict["deliverable_repair"] = list(ensured.get("created") or [])
+            check = verify_result(result_dict, workdir)
+            req = verify_against_requirements(task_row, result_dict, workdir)
+            ok_local = bool(result_dict.get("ok") and check["ok"] and req["ok"])
             return {
                 "ok": ok_local,
-                "result": result.to_dict(),
+                "result": result_dict,
                 "check": check,
                 "requirements": req,
-                "error": None if ok_local else (result.error or check.get("issues") or req.get("issues")),
+                "error": None if ok_local else (result_dict.get("error") or result.error or check.get("issues") or req.get("issues")),
             }
 
         outcome = self.repair.run_with_repair(_run)

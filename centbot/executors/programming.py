@@ -85,6 +85,7 @@ class ProgrammingExecutor(Executor):
                         error=indep.get("error") or "insufficient_independent_verification",
                     )
                 artifacts = [str(p) for p in (solution, tests, runner_script) if p.exists()]
+                artifacts = _alias_required_py(task, workdir, artifacts)
                 return ExecutionResult(
                     ok=True,
                     category=self.category,
@@ -103,6 +104,7 @@ class ProgrammingExecutor(Executor):
                 gen_meta = generate_solution(task, workdir, ollama=self.ollama)
 
         artifacts = [str(p) for p in (solution, tests, runner_script) if p.exists()]
+        artifacts = _alias_required_py(task, workdir, artifacts)
         last = attempts[-1]["result"] if attempts else {}
         return ExecutionResult(
             ok=False,
@@ -111,3 +113,14 @@ class ProgrammingExecutor(Executor):
             artifacts=artifacts,
             error=last.get("stderr") or last.get("error") or "tests_failed",
         )
+
+
+def _alias_required_py(task: dict[str, Any], workdir: Path, artifacts: list[str]) -> list[str]:
+    """Copy solution.py to any required .py name from the brief (e.g. render.py)."""
+    from centbot.quality.deliverables import ensure_named_deliverables, named_deliverables
+
+    needed = [n for n in named_deliverables(task) if n.endswith(".py")]
+    if not needed:
+        return artifacts
+    ensured = ensure_named_deliverables(task, workdir, {"artifacts": artifacts, "ok": True})
+    return list(ensured.get("artifacts") or artifacts)

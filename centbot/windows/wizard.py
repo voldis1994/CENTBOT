@@ -106,6 +106,12 @@ def build_local_yaml(answers: dict[str, Any]) -> dict[str, Any]:
                 "CENTBOT_ANDROID_04",
             ],
         },
+        "ai": {
+            # Heuristic planner/analyzer on by default; Ollama optional enrichment
+            "enabled": True,
+            "model": answers.get("ai_model") or "tinyllama",
+            "ollama_base_url": answers.get("ollama_base_url") or "http://127.0.0.1:11434",
+        },
         "notifications": {
             "email": bool(answers.get("notify_email", True)),
             "desktop": bool(answers.get("notify_desktop", True)),

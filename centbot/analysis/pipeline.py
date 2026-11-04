@@ -20,7 +20,7 @@ CATEGORY_KEYWORDS = {
     "image": ["image", "png", "jpg", "jpeg", "screenshot", "vision", "photo", "banner", "logo"],
     "gif": ["gif", "animated gif", "animācij", ".gif"],
     "video": ["video", "mp4", "webm", "short clip", "screen recording", ".mp4", ".webm"],
-    "text": ["summarize", "text", "copywriting", "rewrite", "blog", "article"],
+    "text": ["summarize", "text", "copywriting", "rewrite", "blog", "article", "faq"],
     "programming": ["python", "function", "code", "unit-test", "implement", "refactor", "api"],
     "browser": ["browser", "web", "scrape", "playwright", "selenium", "crawl"],
     "android": ["android", "apk", "emulator", "adb", "mobile app", "ui automator"],
@@ -30,7 +30,15 @@ CATEGORY_KEYWORDS = {
 CATEGORY_CONTENT_SIGNALS = {
     "android": [r"\bapk\b", r"\badb\b", r"android emulator", r"mobile ui", r"espresso"],
     "browser": [r"playwright", r"selenium", r"scrape the page", r"fill the form", r"headless"],
-    "programming": [r"```", r"def\s+\w+\(", r"unit.?test", r"implement a function", r"pull request"],
+    "programming": [
+        r"```",
+        r"def\s+\w+\(",
+        r"unit.?test",
+        r"implement a function",
+        r"pull request",
+        r"\brender\.py\b",
+        r"write (a )?python (script|file)",
+    ],
     "csv": [r"\.csv\b", r"comma[- ]separated", r"dedupe rows"],
     "excel": [r"\.xlsx?\b", r"workbook", r"pivot table"],
     "json_xml": [r"\.json\b", r"\.xml\b", r"json schema", r"xpath"],
@@ -38,7 +46,7 @@ CATEGORY_CONTENT_SIGNALS = {
     "gif": [r"\.gif\b", r"animated gif", r"create a gif"],
     "video": [r"\.mp4\b", r"\.webm\b", r"short video", r"screen record"],
     "image": [r"\.png\b", r"\.jpe?g\b", r"generate (an )?image", r"create (a )?logo", r"thumbnail"],
-    "text": [r"summarize", r"rewrite", r"proofread", r"blog post"],
+    "text": [r"summarize", r"rewrite", r"proofread", r"blog post", r"\bfaq\.md\b", r"\bfaq\b"],
 }
 
 

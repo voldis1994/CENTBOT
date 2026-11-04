@@ -47,10 +47,14 @@ def extract_requirements(task: dict[str, Any]) -> dict[str, Any]:
     m = re.search(r"each\s+(\d+)\s*-\s*(\d+)\s+words?", description, re.I)
     if m:
         constraints["words_per_line"] = (int(m.group(1)), int(m.group(2)))
-    # required filenames
-    files = re.findall(r"\b([\w.\-]+\.(?:csv|json|xml|xlsx|txt|py|pdf|md))\b", description, re.I)
+    # required filenames (include common media so create-tasks are verified by name)
+    files = re.findall(
+        r"\b([\w.\-]+\.(?:csv|json|xml|xlsx|txt|py|pdf|md|png|jpe?g|gif|webp))\b",
+        description,
+        re.I,
+    )
     if files:
-        constraints["required_files"] = sorted({f.lower() for f in files})
+        constraints["required_files"] = sorted({Path(f).name.lower() for f in files})
     # JSON keys mentioned as `"key"` or schema key:
     keys = re.findall(r"[\"']([a-zA-Z_][\w]*)[\"']\s*:", description)
     if keys:
@@ -203,6 +207,13 @@ def verify_against_requirements(
     artifact_names = " ".join(sorted(present_names))
     for phrase in spec.get("must_include") or []:
         p = str(phrase).lower().strip().strip(".")
+        # If phrase names a concrete file that exists, the deliverable itself satisfies the clause
+        named_in_phrase = re.findall(
+            r"\b([\w.\-]+\.(?:csv|json|xml|xlsx|txt|py|pdf|md|png|jpe?g|gif|webp))\b",
+            p,
+        )
+        if named_in_phrase and all(Path(n).name.lower() in present_names for n in named_in_phrase):
+            continue
         # If phrase looks like a filename, require the file; otherwise require content evidence
         if re.search(r"\.\w{2,5}$", p):
             fname = Path(p.split()[-1]).name

@@ -21,12 +21,22 @@ class ImageProcessor(Executor):
         except ImportError as exc:
             return ExecutionResult(ok=False, category=self.category, error=f"Pillow missing: {exc}")
 
+        from centbot.quality.deliverables import named_deliverables, needs_photorealistic_media
+
         title = str(task.get("title") or "")
         description = str(task.get("description") or "")
         blob = f"{title}\n{description}"
         wants_gif = bool(re.search(r"\bgif\b|\.gif\b|animated", blob, re.I))
         wants_video = bool(re.search(r"\bvideo\b|\.mp4\b|\.webm\b|short clip", blob, re.I))
         create = is_create_output_task(task, extensions=(".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm"))
+
+        if needs_photorealistic_media(task):
+            return ExecutionResult(
+                ok=False,
+                category=self.category,
+                error="generic_cannot_produce:photorealistic_media",
+                output={"reason": "requires_photorealistic_media"},
+            )
 
         src = None
         for name in ("input.png", "input.jpg", "input.jpeg", "input.gif"):
@@ -44,6 +54,9 @@ class ImageProcessor(Executor):
 
         artifacts: list[str] = []
         meta: dict[str, Any] = {"mode": "transform" if src else "generate"}
+        preferred_names = [
+            n for n in named_deliverables(task) if Path(n).suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        ]
 
         if src is not None:
             image = Image.open(src)
@@ -58,10 +71,19 @@ class ImageProcessor(Executor):
             base = image.convert("RGBA")
         else:
             base = _generate_canvas(title or "CENTBOT", description, Image, ImageDraw, ImageFont)
-            out_png = workdir / "output.png"
-            base.convert("RGB").save(out_png)
+            out_name = preferred_names[0] if preferred_names else "output.png"
+            out_png = workdir / out_name
+            if out_png.suffix.lower() in {".jpg", ".jpeg"}:
+                base.convert("RGB").save(out_png, quality=90)
+            else:
+                base.convert("RGB").save(out_png)
             artifacts.append(str(out_png))
-            meta.update({"size": base.size, "generated": True})
+            # Also keep canonical output.png for downstream tooling
+            if out_png.name.lower() != "output.png":
+                canon = workdir / "output.png"
+                base.convert("RGB").save(canon)
+                artifacts.append(str(canon))
+            meta.update({"size": base.size, "generated": True, "primary": out_png.name})
 
         if wants_gif or (create and "gif" in blob.lower()):
             gif_path = workdir / "output.gif"
