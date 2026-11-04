@@ -124,9 +124,39 @@ def start_emulators(
     boot_timeout_s: float = 120.0,
 ) -> dict[str, Any]:
     plan = plan_emulator_count()
-    n = count if count is not None else int(plan["recommended"])
+    recommended = int(plan.get("recommended") or 0)
+    n = count if count is not None else recommended
+    n = max(0, min(4, int(n)))
     names = AVD_NAMES[:n]
-    _progress(f"Android: plānoju {n} emulatoru(s) · RAM/CPU limits: {plan.get('reason') or plan.get('note') or 'ok'}")
+    _progress(
+        f"Android: plānoju {n} emulatoru(s) · "
+        f"{plan.get('message') or plan.get('reason') or 'RAM/CPU ok'}"
+    )
+    if recommended <= 0 and count is None:
+        _progress("Android: pārāk maz brīvās RAM — emulatorus nelaižu; PC lane (LIVE) startēs")
+        return {
+            "planned": list(AVD_NAMES[:3]),
+            "started": [],
+            "boots": [],
+            "devices": [],
+            "plan": plan,
+            "ok": False,
+            "skipped": True,
+            "reason": "ram_available_too_low",
+            "hint": "Close Chrome and other apps until ≥2 GB free RAM, then STOP+START",
+            "hint_lv": "Aizver Chrome/citas app, lai ≥2 GB brīvas RAM, tad STOP+START",
+        }
+    if n <= 0:
+        return {
+            "planned": [],
+            "started": [],
+            "boots": [],
+            "devices": [],
+            "plan": plan,
+            "ok": False,
+            "skipped": True,
+            "reason": "zero_emulators_planned",
+        }
     try:
         from centbot.android.adb import ensure_server
 
@@ -148,20 +178,26 @@ def start_emulators(
             "error": f"list_avds_failed:{exc}",
         }
     found = sorted(present.intersection(names))
+    others = sorted(present - set(AVD_NAMES))
     _progress(f"Android: atrasti CENTBOT AVD: {', '.join(found) if found else '(nav)'}")
+    if others:
+        _progress(f"Android: citi AVD hostā (ne CENTBOT): {', '.join(others[:8])}")
     if not present.intersection(names):
         # No CENTBOT AVDs — do not sleep/wait_for_boot (that made START appear hung)
-        _progress("Android: nav CENTBOT_ANDROID_01..04 — palaid INSTALL_ANDROID.bat (engine tomēr startēs)")
+        _progress("Android: nav CENTBOT_ANDROID_01..04 — palaid INSTALL_ANDROID.bat kā Administrators")
+        _progress("Android: SDK/JDK var būt OK, bet vajag tieši šos AVD vārdus (engine tomēr startē PC lane)")
         return {
             "planned": names,
             "started": [{"avd": n, "ok": False, "error": "avd_missing"} for n in names],
             "boots": [],
             "devices": [],
+            "other_avds": others,
             "plan": plan,
             "ok": False,
             "skipped": True,
             "reason": "no_centbot_avds",
             "hint": "Run INSTALL_ANDROID.bat to create CENTBOT_ANDROID_01..04",
+            "hint_lv": "Palaid INSTALL_ANDROID.bat (Administrators) — izveidos CENTBOT_ANDROID_01..04. Tad STOP+START.",
         }
     started: list[dict[str, Any]] = []
     for name in names:

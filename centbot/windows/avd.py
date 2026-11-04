@@ -222,12 +222,29 @@ def wait_for_boot(adb_path: str = "adb", serial: str | None = None, timeout_s: f
 
 def plan_emulator_count() -> dict[str, Any]:
     hw = full_hw_report()
-    rec = recommended_emulator_count((hw.get("ram") or {}).get("total_gb") or 0, (hw.get("cpu") or {}).get("physical_cores") or 0)
+    ram = hw.get("ram") or {}
+    rec = recommended_emulator_count(
+        float(ram.get("total_gb") or 0),
+        int((hw.get("cpu") or {}).get("physical_cores") or 0),
+        available_gb=float(ram.get("available_gb") or 0),
+    )
+    if rec <= 0:
+        msg = (
+            f"Brīvā RAM ~{ram.get('available_gb')} GB — aizver Chrome/citas programmas, "
+            "tad STOP+START (emulatoriem vajag ≥2 GB brīvus)."
+        )
+    elif rec >= 4:
+        msg = None
+    else:
+        msg = (
+            f"Resources allow {rec} emulator(s), not 4 "
+            f"(total {ram.get('total_gb')} GB / free {ram.get('available_gb')} GB). "
+            "CENTBOT will use the reduced count."
+        )
     return {
         "recommended": rec,
-        "names": AVD_NAMES[:rec],
+        "names": AVD_NAMES[:rec] if rec > 0 else [],
         "hw": hw,
-        "message": None
-        if rec >= 4
-        else f"Resources allow {rec} emulator(s), not 4. CENTBOT will use {rec} and keep roles collapsed.",
+        "message": msg,
+        "reason": msg,
     }

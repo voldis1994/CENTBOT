@@ -20,6 +20,9 @@ echo  0^) Java JDK 17+   1^) Google cmdline-tools
 echo  2^) platform-tools/emulator/sdkmanager/avdmanager
 echo  3^) system-image android-30  4^) CENTBOT_ANDROID_01..04
 echo  Existing AVDs are NEVER overwritten.
+echo  Piezime: citi Android Studio AVD NEDER — vajag tieši
+echo           CENTBOT_ANDROID_01..04. Aizver Chrome pirms
+echo           START ^(emulatoriem vajag ≥2 GB brīvas RAM^).
 echo ============================================
 echo.
 
