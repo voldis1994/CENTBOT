@@ -566,6 +566,36 @@ class CentBotEngine:
             "consistency": self._consistency_report(),
         }
 
+    def _skip_non_automatable_inflight(self) -> int:
+        """Move accepted/needs_repair marketing/buy tasks to skipped (stop repair loops)."""
+        from centbot.quality.automatable import assess_automatable
+
+        rows = self.db.fetchall(
+            "SELECT * FROM tasks WHERE status IN ('accepted','needs_repair','failed','eligible')"
+        )
+        n = 0
+        for row in rows:
+            auto = assess_automatable(row)
+            if auto.get("automatable"):
+                continue
+            reason = str(auto.get("primary_reason") or "not_automatable")
+            raw: dict[str, Any] = {}
+            try:
+                parsed = json.loads(row["raw_json"]) if isinstance(row.get("raw_json"), str) else row.get("raw_json")
+                if isinstance(parsed, dict):
+                    raw = dict(parsed)
+            except (TypeError, json.JSONDecodeError):
+                raw = {}
+            raw["reject_reason"] = reason
+            self.db.execute(
+                "UPDATE tasks SET status=?, raw_json=?, updated_at=? WHERE id=?",
+                ("skipped", json.dumps(raw, default=str), utcnow(), row["id"]),
+            )
+            n += 1
+        if n:
+            self.journal.record("skip_non_automatable", "ok", count=n)
+        return n
+
     def _reclassify_soft_rejects(self) -> int:
         """Turn hard Noraidīts (claimable=false) into skipped/eligible under current rules."""
         from centbot.platforms.hydrate import task_from_row
@@ -682,6 +712,7 @@ class CentBotEngine:
                 self.ledger.update_platform_stats(item["platform"], rejected=1)
         # Reclassify rows stuck as Noraidīts from older claimable=false hard-rejects
         self._reclassify_soft_rejects()
+        self._skip_non_automatable_inflight()
         return analyzed
 
     def _work_dir(self, task_id: str) -> Path:
@@ -691,6 +722,27 @@ class CentBotEngine:
 
     def execute_task(self, task_row: dict[str, Any]) -> dict[str, Any]:
         task_id = task_row["id"]
+        from centbot.quality.automatable import assess_automatable
+
+        pre = assess_automatable(task_row)
+        if not pre.get("automatable"):
+            reason = str(pre.get("primary_reason") or "not_automatable")
+            self.db.execute(
+                "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
+                ("skipped", utcnow(), task_id),
+            )
+            raw = task_row.get("raw_json")
+            try:
+                raw_obj = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+            except (TypeError, json.JSONDecodeError):
+                raw_obj = {}
+            raw_obj["reject_reason"] = reason
+            self.db.execute(
+                "UPDATE tasks SET raw_json=? WHERE id=?",
+                (json.dumps(raw_obj, default=str), task_id),
+            )
+            self.journal.record("execute", "skipped", task_id=task_id, reason=reason)
+            return {"ok": False, "task_id": task_id, "skipped": True, "reason": reason}
         self.db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", ("running", utcnow(), task_id))
         self.db.execute(
             "INSERT INTO task_runs(task_id, worker, status, started_at) VALUES(?,?,?,?)",
@@ -803,6 +855,49 @@ class CentBotEngine:
             }
         else:
             self.optimizer.learn_from_reward(task_row["platform"], False)
+            from centbot.quality.automatable import assess_automatable, issues_indicate_non_automatable
+
+            err_payload = outcome.get("error") or outcome.get("requirements") or "failed"
+            non_auto = assess_automatable(task_row)
+            if (not non_auto.get("automatable")) or issues_indicate_non_automatable(err_payload):
+                reason = str(non_auto.get("primary_reason") or "not_automatable")
+                self.db.execute(
+                    "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
+                    ("skipped", utcnow(), task_id),
+                )
+                raw = task_row.get("raw_json")
+                try:
+                    raw_obj = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+                except (TypeError, json.JSONDecodeError):
+                    raw_obj = {}
+                raw_obj["reject_reason"] = reason
+                self.db.execute(
+                    "UPDATE tasks SET raw_json=? WHERE id=?",
+                    (json.dumps(raw_obj, default=str), task_id),
+                )
+                self.journal.record(
+                    "execute",
+                    "skipped",
+                    task_id=task_id,
+                    reason=reason,
+                    error=str(err_payload)[:500],
+                )
+                alert_msg = f"Izlaists (nav auto): {task_row.get('platform')}:{task_row.get('external_id')} — {reason}"
+                existing = self.db.fetchone(
+                    "SELECT id FROM alerts WHERE acknowledged=0 AND message=? LIMIT 1",
+                    (alert_msg,),
+                )
+                if not existing:
+                    self.db.add_alert("info", alert_msg, source="execute")
+                return {
+                    "ok": False,
+                    "task_id": task_id,
+                    "evidence": str(evidence),
+                    "inputs": inputs,
+                    "local_execution_ok": False,
+                    "skipped": True,
+                    "reason": reason,
+                }
             self.rejection_repair.handle(task_id, reason=str(outcome.get("error") or "failed"))
         self.journal.record("execute", status, task_id=task_id, evidence=str(evidence))
         return {"ok": ok, "task_id": task_id, "evidence": str(evidence), "inputs": inputs, "local_execution_ok": ok}
