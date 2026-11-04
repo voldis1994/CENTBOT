@@ -219,12 +219,8 @@ class CentBotEngine:
             self.config.set("finance.simulate_rewards_in_dry_run", False)
             self.journal.record("config", "sanitized", field="simulate_rewards_in_dry_run", value=False)
             self.db.add_alert("warning", "simulate_rewards_in_dry_run forced off — no synthetic income", source="finance")
-        # Live: ensure BasedAgents keypair exists so claims are not identity_missing spam
-        if self.config.is_live() and not self._controlled_mode:
-            try:
-                self._ensure_basedagents_identity()
-            except Exception as exc:  # noqa: BLE001
-                self.journal.record("basedagents_register", "error", error=str(exc))
+        # BasedAgents PoW register is deferred — never block __init__/dashboard bind
+        self._based_register_started = False
 
     def enter_controlled_mode(self) -> None:
         """Force dry_run and block all real accept/submit/payment booking side effects.
@@ -350,6 +346,24 @@ class CentBotEngine:
             return signing_wallet_status(self.root)
         except Exception as exc:  # noqa: BLE001
             return {"loaded": False, "error": str(exc)}
+
+    def _start_basedagents_register_async(self) -> None:
+        """Kick PoW register off the main thread so START/dashboard stay responsive."""
+        if getattr(self, "_based_register_started", False):
+            return
+        if not (self.config.is_live() and not self._controlled_mode):
+            return
+        self._based_register_started = True
+
+        def _worker() -> None:
+            try:
+                self._ensure_basedagents_identity()
+            except Exception as exc:  # noqa: BLE001
+                self.journal.record("basedagents_register", "error", error=str(exc))
+
+        import threading
+
+        threading.Thread(target=_worker, name="basedagents-register", daemon=True).start()
 
     def _ensure_basedagents_identity(self) -> dict[str, Any]:
         """Create/register BasedAgents keypair when missing (live claim prerequisite)."""
@@ -1326,7 +1340,10 @@ class CentBotEngine:
                 log.error("Dashboard failed to bind: %s", exc)
                 self.db.add_alert("critical", f"Dashboard bind failed: {exc}", source="dashboard")
 
-        self.journal.record("start", "ok", mode=self.config.get("system.mode"), integrations=self.integration_report())
+        # Do NOT probe all platforms here — that blocked panel open (bountybook NXDOMAIN etc.)
+        self.journal.record("start", "ok", mode=self.config.get("system.mode"))
+        # BasedAgents PoW (diff ~22) can take minutes — never block dashboard/START
+        self._start_basedagents_register_async()
         interval = float(self.config.get("system.cycle_interval_seconds", 30))
 
         def _handle_sig(_signum: int, _frame: Any) -> None:
