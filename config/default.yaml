@@ -45,7 +45,8 @@ security:
 ai:
   ollama_base_url: http://127.0.0.1:11434
   model: tinyllama
-  enabled: false
+  # Heuristic analysis always runs; Ollama enriches when installed. Keep true so LIVE plans create deliverables.
+  enabled: true
   timeout_seconds: 60
 
 platforms:

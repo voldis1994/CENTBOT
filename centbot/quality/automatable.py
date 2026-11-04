@@ -51,6 +51,15 @@ _NON_AUTO_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             re.I,
         ),
     ),
+    (
+        "requires_photorealistic_media",
+        re.compile(
+            r"photobooth|photo[- ]?strip|selfie|headshot|"
+            r"exactly\s+\d+\s+photos?.{0,100}(person|character|face|human)|"
+            r"photograph of (a |one )?(person|man|woman|character)",
+            re.I,
+        ),
+    ),
 ]
 
 
@@ -113,5 +122,7 @@ def issues_indicate_non_automatable(issues: list[Any] | str | None) -> bool:
         "missing_input:browser_steps",
         "missing_input_not_repairable",
         "generic_cannot_produce:",
+        "requires_photorealistic_media",
+        "photorealistic_media",
     )
     return any(m in text_l for m in markers)

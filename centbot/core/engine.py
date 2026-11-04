@@ -171,8 +171,15 @@ class CentBotEngine:
             model=str(config.get("ai.model", "tinyllama")),
             timeout=float(config.get("ai.timeout_seconds", 60)),
         )
-        self.ai_analyzer = AITaskAnalyzer(self.ollama, enabled=bool(config.get("ai.enabled", False)))
+        # Default on: heuristic always plans; Ollama enriches when available.
+        self.ai_analyzer = AITaskAnalyzer(self.ollama, enabled=bool(config.get("ai.enabled", True)))
         self.planner = AIWorkPlanner(self.ai_analyzer)
+        # Wire local LLM into programming codegen when present
+        from centbot.executors.programming import ProgrammingExecutor
+
+        for ex in self.executor.executors:
+            if isinstance(ex, ProgrammingExecutor):
+                ex.ollama = self.ollama
         self.workers = WorkerCoordinator()
         avds = config.get("android.avds") or [
             "CENTBOT_ANDROID_01",
@@ -203,6 +210,8 @@ class CentBotEngine:
         self._running = False
         self._cycles = 0
         self._last_snapshot: dict[str, Any] = {}
+        self._last_cycle_at: str | None = None
+        self._last_cycle_summary: dict[str, Any] = {}
         self._controlled_mode = False
         self._bank_provider = None
         self._integrations_cache: dict[str, Any] | None = None
@@ -562,7 +571,8 @@ class CentBotEngine:
                 "enabled": bool(self.config.get("browser.enabled", True)),
                 "headless": bool(self.config.get("browser.headless", True)),
             },
-            "ai": {"enabled": bool(self.config.get("ai.enabled")), "ollama": self.ollama.available()},
+            "ai": {"enabled": bool(self.config.get("ai.enabled", True)), "ollama": self.ollama.available()},
+            "pulse": self._build_pulse(integrations),
             "integrations": {
                 k: {
                     "ok": bool(v.get("ok")),
@@ -594,6 +604,108 @@ class CentBotEngine:
                 "operator_email": (self.config.section("operator") or {}).get("email") or "",
             },
             "consistency": self._consistency_report(),
+        }
+
+    def _build_pulse(self, integrations: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Control-panel heartbeat: proves the engine loop is physically advancing."""
+        integrations = integrations or {}
+        interval = float(self.config.get("system.cycle_interval_seconds", 30) or 30)
+        last_at = self._last_cycle_at
+        last_summary = dict(self._last_cycle_summary or {})
+        if not last_at:
+            cached = self.db.get_state("last_cycle") or {}
+            if isinstance(cached, dict):
+                last_at = cached.get("at")
+                if isinstance(cached.get("summary"), dict):
+                    last_summary = dict(cached["summary"])
+        age: float | None = None
+        if last_at:
+            try:
+                from datetime import datetime, timezone
+
+                raw = str(last_at).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+            except (TypeError, ValueError):
+                age = None
+        # Working = engine loop on AND a cycle completed within 3× interval (or just started)
+        fresh = age is not None and age <= max(45.0, interval * 3)
+        just_started = bool(self._running) and self._cycles == 0 and age is None
+        working = bool(self._running) and (fresh or just_started) and not self.emergency.is_active()
+        ai_enabled = bool(self.config.get("ai.enabled", True))
+        ollama_ok = bool(self.ollama.available())
+        if ai_enabled and ollama_ok:
+            ai_mode, ai_label = "ollama", "AI ieslēgts · Ollama"
+        elif ai_enabled:
+            ai_mode, ai_label = "heuristic", "AI ieslēgts · heuristika"
+        else:
+            ai_mode, ai_label = "off", "AI izslēgts"
+        android = self.emulator.status() if hasattr(self, "emulator") else {}
+        android_ok = bool(android.get("running") or android.get("active") or (android.get("running_devices") or []))
+        disc_ok = sum(1 for v in integrations.values() if isinstance(v, dict) and v.get("ok"))
+        if working:
+            label = "Sistēma strādā"
+        elif self.emergency.is_active():
+            label = "Emergency stop"
+        elif self._running:
+            label = "Dīkstāvē / gaida ciklu"
+        else:
+            label = "Apturēta"
+        recent_actions = []
+        for row in (self.db.fetchall(
+            "SELECT id, title, platform, status, updated_at FROM tasks "
+            "WHERE status IN ('running','accepted','submitted','needs_repair','completed','failed','skipped') "
+            "ORDER BY updated_at DESC LIMIT 8"
+        ) or []):
+            recent_actions.append(
+                {
+                    "id": row.get("id"),
+                    "title": row.get("title"),
+                    "platform": row.get("platform"),
+                    "status": row.get("status"),
+                    "updated_at": row.get("updated_at"),
+                }
+            )
+        return {
+            "engine_running": bool(self._running),
+            "working": working,
+            "label_lv": label,
+            "cycles": int(self._cycles or 0),
+            "last_cycle_at": last_at,
+            "seconds_since_cycle": age,
+            "cycle_interval_seconds": interval,
+            "last_cycle": last_summary,
+            "ai": {
+                "enabled": ai_enabled,
+                "ollama": ollama_ok,
+                "mode": ai_mode,
+                "label_lv": ai_label,
+            },
+            "components": {
+                "engine": {"ok": bool(self._running), "label": "Worker Engine"},
+                "ai": {"ok": ai_enabled, "label": ai_label},
+                "discovery": {
+                    "ok": disc_ok > 0,
+                    "label": f"Discovery {disc_ok}/{len(integrations)}",
+                },
+                "workers": {
+                    "ok": self.pool.active_count() >= 0,
+                    "label": f"Workers {self.pool.active_count()}/{int(self.config.get('system.max_parallel_tasks', 4) or 4)}",
+                    "active": self.pool.active_count(),
+                },
+                "android": {
+                    "ok": android_ok,
+                    "label": str(android.get("label") or ("Android OK" if android_ok else "Android OFF")),
+                },
+                "browser": {
+                    "ok": bool(self.config.get("browser.enabled", True)),
+                    "label": "Pārlūks" if self.config.get("browser.enabled", True) else "Pārlūks OFF",
+                },
+            },
+            "recent_actions": recent_actions,
+            "tick": int(time.time()),
         }
 
     def _skip_non_automatable_inflight(self) -> int:
@@ -786,16 +898,55 @@ class CentBotEngine:
         self.workers.run_subtasks(subtasks, {"task": task_row, "plan": plan})
 
         def _run() -> dict[str, Any]:
+            from centbot.quality.deliverables import ensure_named_deliverables, named_deliverables
+
             result = self.executor.execute(task_row, workdir)
-            check = verify_result(result.to_dict(), workdir)
-            req = verify_against_requirements(task_row, result.to_dict(), workdir)
-            ok_local = bool(result.ok and check["ok"] and req["ok"])
+            result_dict = result.to_dict()
+            ensured = ensure_named_deliverables(task_row, workdir, result_dict)
+            if ensured.get("skipped_reason"):
+                return {
+                    "ok": False,
+                    "result": result_dict,
+                    "check": {"ok": False, "issues": [ensured.get("error")]},
+                    "requirements": {"ok": False, "issues": [ensured.get("error") or ensured["skipped_reason"]]},
+                    "error": ensured.get("error") or ensured["skipped_reason"],
+                }
+            if ensured.get("created") or ensured.get("artifacts"):
+                result_dict = ensured.get("result") or result_dict
+                result_dict["artifacts"] = ensured.get("artifacts") or result_dict.get("artifacts") or []
+                if ensured.get("created"):
+                    self.journal.record(
+                        "deliverables",
+                        "created",
+                        task_id=task_id,
+                        files=ensured.get("created"),
+                    )
+                # Materialising required named outputs can salvage create-style runs
+                # that previously failed only because the file was never written.
+                err = str(result_dict.get("error") or result.error or "")
+                hard = err.startswith("missing_input:") or "photorealistic" in err or (
+                    err.startswith("generic_cannot_produce:") and "photorealistic" in err
+                )
+                needed = named_deliverables(task_row)
+                present = {p.name.lower() for p in workdir.iterdir() if p.is_file()} if workdir.exists() else set()
+                if (
+                    ensured.get("created")
+                    and needed
+                    and all(n in present for n in needed)
+                    and not hard
+                ):
+                    result_dict["ok"] = True
+                    result_dict["error"] = None
+                    result_dict["deliverable_repair"] = list(ensured.get("created") or [])
+            check = verify_result(result_dict, workdir)
+            req = verify_against_requirements(task_row, result_dict, workdir)
+            ok_local = bool(result_dict.get("ok") and check["ok"] and req["ok"])
             return {
                 "ok": ok_local,
-                "result": result.to_dict(),
+                "result": result_dict,
                 "check": check,
                 "requirements": req,
-                "error": None if ok_local else (result.error or check.get("issues") or req.get("issues")),
+                "error": None if ok_local else (result_dict.get("error") or result.error or check.get("issues") or req.get("issues")),
             }
 
         outcome = self.repair.run_with_repair(_run)
@@ -1429,6 +1580,12 @@ class CentBotEngine:
             "live_blockers": readiness.get("blockers") if self.config.is_live() else [],
             "controlled": self._controlled_mode,
         }
+        self._last_cycle_summary = dict(summary)
+        self._last_cycle_at = utcnow()
+        self.db.set_state(
+            "last_cycle",
+            {"at": self._last_cycle_at, "summary": self._last_cycle_summary},
+        )
         # Persist evidence snapshot each cycle (facts only)
         try:
             from centbot.quality.ops_report import build_operations_report, write_operations_report

@@ -71,6 +71,7 @@ def test_wizard_live_defaults_auto_accept_and_android():
     )
     assert data["analysis"]["auto_accept"] is True
     assert data["android"]["enabled"] is True
+    assert data["ai"]["enabled"] is True
     assert data["system"]["mode"] == "live"
 
 

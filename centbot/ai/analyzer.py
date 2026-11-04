@@ -19,7 +19,7 @@ _FILE_PATTERNS = [
 
 
 class AITaskAnalyzer:
-    def __init__(self, client: OllamaClient, enabled: bool = False):
+    def __init__(self, client: OllamaClient, enabled: bool = True):
         self.client = client
         self.enabled = enabled
 

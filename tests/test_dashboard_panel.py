@@ -20,6 +20,10 @@ def test_panel_html_matches_mockup_structure():
     assert "Brīdinājumi un darbības" in html
     assert "BANKA + CRYPTO" in html
     assert "/api/status" in html
+    assert "Darbība" in html
+    assert "view-pulse" in html
+    assert "Sistēma strādā" in html or "pulse-banner" in html
+    assert "renderPulse" in html
 
 
 def test_status_payload_has_panel_fields(tmp_path: Path):
@@ -58,16 +62,30 @@ def test_status_payload_has_panel_fields(tmp_path: Path):
     assert "live_readiness" in st
     assert "journal" in st
     assert "discovery" in st
+    assert "pulse" in st
+    assert "label_lv" in st["pulse"]
+    assert "components" in st["pulse"]
+    assert "ai" in st["pulse"]
     assert any(a["message"] == "Test alert" for a in st["alerts"])
     assert engine.acknowledge_alert(st["alerts"][0]["id"]) is True
+    # Simulate a live cycle so the control panel can show "Sistēma strādā"
+    engine._running = True
+    engine.cycle_once()
+    pulse = engine.status()["pulse"]
+    assert pulse["working"] is True
+    assert pulse["cycles"] >= 1
+    assert pulse["last_cycle_at"]
+    assert "analyzed" in (pulse.get("last_cycle") or {})
     app = create_dashboard(engine.status, lambda: None, ack_alert=engine.acknowledge_alert)
     client = app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     assert b"Autonom" in r.data
+    assert b"Darb" in r.data  # Darbība nav
     s = client.get("/api/status")
     assert s.status_code == 200
     body = s.get_json()
     assert body["mode"] == "dry_run"
     assert body["live"] is False
+    assert body["pulse"]["working"] is True
     engine.shutdown()
