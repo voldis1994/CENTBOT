@@ -39,11 +39,16 @@ def cpu_info() -> dict[str, Any]:
 def ram_info() -> dict[str, Any]:
     vm = psutil.virtual_memory()
     total_gb = vm.total / (1024**3)
+    available_gb = vm.available / (1024**3)
     return {
         "total_gb": round(total_gb, 2),
-        "available_gb": round(vm.available / (1024**3), 2),
-        "ok_for_four_emulators": total_gb >= MIN_RAM_GB_FOUR_EMULATORS,
-        "recommended_emulators": recommended_emulator_count(total_gb, psutil.cpu_count(logical=False) or 0),
+        "available_gb": round(available_gb, 2),
+        "ok_for_four_emulators": total_gb >= MIN_RAM_GB_FOUR_EMULATORS and available_gb >= 10.0,
+        "recommended_emulators": recommended_emulator_count(
+            total_gb,
+            psutil.cpu_count(logical=False) or 0,
+            available_gb=available_gb,
+        ),
     }
 
 
@@ -59,16 +64,37 @@ def disk_info(path: str | None = None) -> dict[str, Any]:
     }
 
 
-def recommended_emulator_count(ram_gb: float, physical_cores: int) -> int:
+def recommended_emulator_count(
+    ram_gb: float,
+    physical_cores: int,
+    *,
+    available_gb: float | None = None,
+) -> int:
+    """How many AVDs to run. Prefer free RAM when provided — total RAM alone over-promises."""
     if ram_gb < 6 or physical_cores < 2:
         return 0
     if ram_gb < 8 or physical_cores < 3:
-        return 1
-    if ram_gb < 12 or physical_cores < 4:
-        return 2
-    if ram_gb < 16:
-        return 3
-    return 4
+        by_total = 1
+    elif ram_gb < 12 or physical_cores < 4:
+        by_total = 2
+    elif ram_gb < 16:
+        by_total = 3
+    else:
+        by_total = 4
+    if available_gb is None:
+        return by_total
+    # ~2.2 GB free per emulator after Windows/Chrome overhead
+    if available_gb < 2.0:
+        by_free = 0
+    elif available_gb < 4.5:
+        by_free = 1
+    elif available_gb < 7.0:
+        by_free = 2
+    elif available_gb < 10.0:
+        by_free = 3
+    else:
+        by_free = 4
+    return min(by_total, by_free)
 
 
 def virtualization_supported() -> dict[str, Any]:
@@ -194,12 +220,18 @@ def full_hw_report(path: str | None = None) -> dict[str, Any]:
         blockers.append("cpu_below_4_cores_for_four_emulators")
     if not jdk["ok"] and win["is_windows"]:
         blockers.append("jdk_missing")
-    rec = recommended_emulator_count(ram["total_gb"], cpu["physical_cores"])
+    rec = recommended_emulator_count(
+        ram["total_gb"],
+        cpu["physical_cores"],
+        available_gb=ram.get("available_gb"),
+    )
     # Disk can also force a lower count
     if disk["free_gb"] < 40 and rec > 2:
         rec = min(rec, 2)
     if disk["free_gb"] < 30 and rec > 1:
         rec = min(rec, 1)
+    if rec == 0 and float(ram.get("available_gb") or 0) < 2.0:
+        blockers.append("ram_available_too_low_close_apps")
     return {
         "windows": win,
         "cpu": cpu,
