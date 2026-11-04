@@ -8,6 +8,7 @@ from typing import Any
 from centbot.core.logger import ActionJournal, get_logger
 from centbot.core.priority import score_priority
 from centbot.platforms.base import PlatformTask
+from centbot.quality.automatable import assess_automatable
 
 log = get_logger("centbot.analysis")
 
@@ -146,6 +147,13 @@ class AnalysisPipeline:
             if isinstance(raw, dict):
                 reason = str(raw.get("skip_reason") or reason)
             return {"status": "skipped", "reason": reason}
+        # Human / buy / referral / own-audit-page tasks — never accept then fail in a loop
+        auto = assess_automatable(row)
+        if not auto.get("automatable"):
+            return {
+                "status": "skipped",
+                "reason": str(auto.get("primary_reason") or "not_automatable"),
+            }
         if self.config.get("reject_unfunded", True) and not row.get("funded"):
             return {"status": "rejected", "reason": "unfunded"}
         if float(row.get("payer_trust") or 0) < min_trust:
