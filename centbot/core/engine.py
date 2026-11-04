@@ -54,6 +54,46 @@ from centbot.submission.submitter import Submitter
 log = get_logger("centbot.engine")
 
 
+def _collect_submit_artifacts(result_out: dict[str, Any], workdir: Path, evidence: Path) -> list[str]:
+    """Prefer evidence copies of deliverables so TaskMarket always gets real files."""
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: Path) -> None:
+        try:
+            if not p.is_file() or p.stat().st_size <= 0:
+                return
+            if p.name.lower() == "meta.json":
+                return
+            key = str(p.resolve())
+        except OSError:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        paths.append(str(p))
+
+    ev = Path(evidence)
+    wd = Path(workdir)
+    for raw in result_out.get("artifacts") or []:
+        src = Path(str(raw))
+        if ev.is_dir():
+            cand = ev / src.name
+            if cand.is_file():
+                _add(cand)
+                continue
+        _add(src)
+        if wd.is_dir():
+            _add(wd / src.name)
+    if ev.is_dir():
+        for child in sorted(ev.iterdir()):
+            _add(child)
+    if wd.is_dir():
+        for child in sorted(wd.iterdir()):
+            _add(child)
+    return paths
+
+
 class CentBotEngine:
     def __init__(self, config: Config):
         self.config = config
@@ -1006,13 +1046,56 @@ class CentBotEngine:
             submit_payload = {
                 "summary": f"CENTBOT completed {task_row.get('title')}",
                 "evidence": str(evidence),
+                "workdir": str(workdir),
                 "output": result_out.get("output"),
                 "content": result_out.get("output"),
-                "artifacts": list(result_out.get("artifacts") or []),
+                "artifacts": _collect_submit_artifacts(result_out, workdir, Path(evidence)),
+                "title": task_row.get("title"),
+                "description": task_row.get("description"),
+                "category": task_row.get("category"),
             }
             task_obj = task_row.get("_task") or task_from_row(task_row)
             submit_row = {**task_row, "_task": task_obj}
             submit_result = self.submitter.submit(submit_row, submit_payload)
+            # TaskMarket 402 / stake on submit — soft-skip (do not repair-loop)
+            err_l = str(submit_result.get("error") or "").lower()
+            if (
+                not submit_result.get("ok")
+                and str(task_row.get("platform") or "") == "taskmarket"
+                and (
+                    submit_result.get("status") == 402
+                    or "402" in err_l
+                    or "payment required" in err_l
+                )
+            ):
+                self.journal.record(
+                    "submit_result",
+                    "skipped",
+                    task_id=task_id,
+                    reason="taskmarket_submit_payment_required",
+                    result=submit_result,
+                )
+                raw = task_row.get("raw_json")
+                try:
+                    raw_obj = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+                except (TypeError, json.JSONDecodeError):
+                    raw_obj = {}
+                raw_obj["reject_reason"] = "taskmarket_submit_payment_required"
+                self.db.execute(
+                    "UPDATE tasks SET status=?, raw_json=?, updated_at=? WHERE id=?",
+                    ("skipped", json.dumps(raw_obj, default=str), utcnow(), task_id),
+                )
+                return {
+                    "ok": False,
+                    "task_id": task_id,
+                    "evidence": str(evidence),
+                    "inputs": inputs,
+                    "submit": submit_result,
+                    "skipped": True,
+                    "reason": "taskmarket_submit_payment_required",
+                    "local_execution_ok": True,
+                    "platform_submit_ok": False,
+                }
             submit_mode = submit_result.get("mode")
             platform_submit_ok = bool(submit_result.get("ok")) and submit_mode != "dry_run"
             if submit_mode == "dry_run":

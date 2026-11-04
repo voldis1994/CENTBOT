@@ -124,5 +124,7 @@ def issues_indicate_non_automatable(issues: list[Any] | str | None) -> bool:
         "generic_cannot_produce:",
         "requires_photorealistic_media",
         "photorealistic_media",
+        "taskmarket_submit_payment_required",
+        "payment required",
     )
     return any(m in text_l for m in markers)

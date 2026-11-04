@@ -261,10 +261,19 @@ class TaskMarketConnector(PlatformConnector):
             return {"ok": False, "error": "wallet_required"}
         artifacts = _build_taskmarket_artifacts(payload, task=task)
         if not artifacts:
+            kinds = sorted(_required_media_kinds(task, payload))
             return {
                 "ok": False,
                 "error": "artifacts_required",
-                "hint": "TaskMarket API requires real deliverable files — text summary result.json is not enough for media/binary tasks.",
+                "required_media": kinds,
+                "hint": (
+                    "TaskMarket API requires real deliverable files — "
+                    + (
+                        f"media kinds {kinds} missing from evidence/artifacts."
+                        if kinds
+                        else "no files found under evidence/artifacts/workdir."
+                    )
+                ),
             }
         msg = taskmarket_submit_message(task.external_id)
         sig = _sig_hex(self.wallet.sign_message(msg))
@@ -394,7 +403,11 @@ def _guess_mime(path: str) -> str:
 
 
 def _required_media_kinds(task: Any | None, payload: dict[str, Any]) -> set[str]:
-    """Detect when the brief demands producing a concrete non-text deliverable."""
+    """Detect when the brief demands producing a concrete non-text deliverable.
+
+    Keep this strict: bare words like ``render.py`` / ``docker image`` must NOT
+    block submitting real code/markdown artifacts.
+    """
     import re
 
     parts = [
@@ -409,23 +422,40 @@ def _required_media_kinds(task: Any | None, payload: dict[str, Any]) -> set[str]
     if isinstance(raw, dict):
         parts.append(str(raw.get("task") or raw)[:2000])
     blob = " ".join(parts).lower()
+    # Produce-oriented verbs — exclude bare "render.py" / "submit result" alone
     create = bool(
-        re.search(r"\b(create|generate|make|build|produce|draw|render|deliver|submit|attach|izveido|ģenerē)\b", blob)
+        re.search(
+            r"\b(create|generate|make|build|produce|draw|compose|design|izveido|ģenerē)\b",
+            blob,
+        )
     )
     if not create:
         return set()
     kinds: set[str] = set()
-    if re.search(r"\b(png|jpe?g|image|logo|banner|attēl)\b|\.png\b|\.jpe?g\b", blob):
+    # Require explicit media file / produce-image phrasing (not "docker/system/disk image")
+    blob_media = re.sub(
+        r"\b(docker|system|disk|container|vm|ami|oci)\s+images?\b",
+        " ",
+        blob,
+    )
+    if re.search(
+        r"(\.png\b|\.jpe?g\b|\.webp\b|"
+        r"\bpng\b|\bjpg\b|\bjpeg\b|"
+        r"\b(logo|banner|thumbnail|photobooth|photo[- ]?strip|attēl)\b|"
+        r"\b(create|generate|make|draw|design)\b.{0,40}\b(image|picture|photo)\b|"
+        r"\b(image|picture|photo)\b.{0,40}\b(create|generate|make|draw|design)\b)",
+        blob_media,
+    ):
         kinds.add("image")
-    if re.search(r"\bgif\b|animated|\.gif\b", blob):
+    if re.search(r"\.gif\b|\banimated gif\b|\bcreate (a )?gif\b", blob):
         kinds.add("gif")
-    if re.search(r"\b(video|mp4|webm|clip)\b|\.mp4\b|\.webm\b", blob):
+    if re.search(r"\.mp4\b|\.webm\b|\bshort (video|clip)\b|\bcreate (a )?video\b", blob):
         kinds.add("video")
-    if re.search(r"\bpdf\b|\.pdf\b", blob):
+    if re.search(r"\.pdf\b|\bcreate (a )?pdf\b|\bpdf (file|document|report)\b", blob):
         kinds.add("pdf")
-    if re.search(r"\bapk\b|\.apk\b", blob):
+    if re.search(r"\.apk\b|\bandroid (apk|package)\b", blob):
         kinds.add("apk")
-    if re.search(r"\b(xlsx?|csv)\b|\.xlsx?\b|\.csv\b", blob):
+    if re.search(r"\.xlsx?\b|\.csv\b|\bcreate (a )?(csv|excel|spreadsheet)\b", blob):
         kinds.add("tabular")
     return kinds
 
@@ -461,6 +491,12 @@ def _artifacts_satisfy_media(artifacts: list[dict[str, str]], kinds: set[str]) -
     return True
 
 
+_PLACEHOLDER_NAMES = frozenset(
+    {"result.json", "result.txt", "summary.txt", "summary.json", "unsupported_category.txt", "meta.json", "image_meta.json"}
+)
+_NAMED_CODE_DOC = frozenset({".py", ".md", ".csv", ".xml", ".html", ".js", ".ts", ".java", ".kt"})
+
+
 def _build_taskmarket_artifacts(payload: dict[str, Any], task: Any | None = None) -> list[dict[str, str]]:
     """Build OpenAPI artifacts from real files. Never invent result.json for media tasks."""
     import base64
@@ -475,6 +511,14 @@ def _build_taskmarket_artifacts(payload: dict[str, Any], task: Any | None = None
             paths.extend(str(x) for x in val if x)
         elif isinstance(val, str) and val:
             paths.append(val)
+    # workdir fallback (engine may pass sandbox path when evidence remap lags)
+    workdir = payload.get("workdir")
+    if workdir:
+        wp = Path(str(workdir))
+        if wp.is_dir():
+            for child in sorted(wp.iterdir()):
+                if child.is_file() and child.stat().st_size > 0 and child.name.lower() not in {"meta.json"}:
+                    paths.append(str(child))
     evidence = payload.get("evidence")
     if evidence:
         # evidence dir or file — collect concrete files, skip bare directories
@@ -483,31 +527,42 @@ def _build_taskmarket_artifacts(payload: dict[str, Any], task: Any | None = None
             paths.append(str(ep))
         elif ep.is_dir():
             for child in sorted(ep.rglob("*")):
-                if child.is_file() and child.stat().st_size > 0:
+                if child.is_file() and child.stat().st_size > 0 and child.name.lower() != "meta.json":
                     paths.append(str(child))
     seen: set[str] = set()
     for raw in paths:
         p = Path(raw)
         if not p.is_file():
-            continue
+            # Remap basename into evidence/workdir when absolute path went stale
+            name = p.name
+            for root_key in ("evidence", "workdir"):
+                root = payload.get(root_key)
+                if not root:
+                    continue
+                cand = Path(str(root)) / name
+                if cand.is_file():
+                    p = cand
+                    break
+            if not p.is_file():
+                continue
         # Skip prose-only placeholders when media is required
-        if required_kinds and p.name.lower() in {"result.json", "result.txt", "summary.txt", "unsupported_category.txt"}:
+        if required_kinds and p.name.lower() in _PLACEHOLDER_NAMES:
             continue
-        key = str(p.resolve())
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
         if key in seen:
             continue
         seen.add(key)
         data = p.read_bytes()
         if not data or len(data) > 2_000_000:
             continue
-        role = "final" if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm", ".pdf", ".zip", ".apk"} else "attachment"
-        if p.name.lower().startswith("thumb"):
-            role = "preview"
+        # OpenAPI: fileName + mimeType + file (base64). Keep payload minimal.
         artifacts.append(
             {
                 "fileName": p.name[:255],
                 "mimeType": _guess_mime(str(p))[:120],
-                "role": role,
                 "file": base64.b64encode(data).decode("ascii"),
             }
         )
@@ -516,7 +571,19 @@ def _build_taskmarket_artifacts(payload: dict[str, Any], task: Any | None = None
 
     if artifacts:
         if required_kinds and not _artifacts_satisfy_media(artifacts, required_kinds):
-            # Have files but none match required media type — refuse text-only pack
+            # Hard media ask with only prose → refuse. Named code/docs still ship when
+            # the brief also asked for them (e.g. render.py) and media was a false positive.
+            named = [
+                a
+                for a in artifacts
+                if a["fileName"].lower() not in _PLACEHOLDER_NAMES
+                and Path(a["fileName"]).suffix.lower() in _NAMED_CODE_DOC
+            ]
+            hard_media = bool(required_kinds & {"image", "gif", "video", "pdf", "apk"})
+            if hard_media and not _artifacts_satisfy_media(artifacts, required_kinds & {"image", "gif", "video", "pdf", "apk"}):
+                return []
+            if named:
+                return named
             return []
         return artifacts
 

@@ -134,6 +134,65 @@ def test_taskmarket_refuses_text_fallback_for_media_tasks():
         assert {a["fileName"] for a in arts2} == {"output.png", "output.gif"}
 
 
+def test_taskmarket_packs_render_py_from_evidence(tmp_path: Path):
+    """Live bug: deliverables-created then artifacts_required — evidence must ship."""
+    from centbot.platforms.base import PlatformTask
+
+    ev = tmp_path / "evidence"
+    ev.mkdir()
+    py = ev / "render.py"
+    py.write_text("def render():\n    return {'ok': True}\n", encoding="utf-8")
+    (ev / "meta.json").write_text("{}", encoding="utf-8")
+    task = PlatformTask(
+        platform="taskmarket",
+        external_id="tm-render",
+        title="Renderer",
+        description="Write a python file named render.py that exposes render().",
+        reward_amount=1.0,
+        reward_currency="USDC",
+    )
+    arts = _build_taskmarket_artifacts(
+        {"evidence": str(ev), "summary": "CENTBOT completed Renderer", "output": {"ok": True}},
+        task=task,
+    )
+    assert arts
+    assert any(a["fileName"] == "render.py" for a in arts)
+    assert "role" not in arts[0]
+
+
+def test_taskmarket_docker_image_word_does_not_block_code(tmp_path: Path):
+    from centbot.platforms.base import PlatformTask
+
+    f = tmp_path / "solution.py"
+    f.write_text("def add(a,b): return a+b\n", encoding="utf-8")
+    task = PlatformTask(
+        platform="taskmarket",
+        external_id="tm-code",
+        title="Build helper",
+        description="Create solution.py. Mentions docker image only as environment note.",
+        reward_amount=1.0,
+        reward_currency="USDC",
+    )
+    arts = _build_taskmarket_artifacts({"artifacts": [str(f)]}, task=task)
+    assert len(arts) == 1
+    assert arts[0]["fileName"] == "solution.py"
+
+
+def test_collect_submit_artifacts_prefers_evidence(tmp_path: Path):
+    from centbot.core.engine import _collect_submit_artifacts
+
+    wd = tmp_path / "work"
+    ev = tmp_path / "ev"
+    wd.mkdir()
+    ev.mkdir()
+    (wd / "faq.md").write_text("# FAQ\n", encoding="utf-8")
+    (ev / "faq.md").write_text("# FAQ evidence\n", encoding="utf-8")
+    (ev / "meta.json").write_text("{}", encoding="utf-8")
+    paths = _collect_submit_artifacts({"artifacts": [str(wd / "faq.md")]}, wd, ev)
+    assert any(Path(p).name == "faq.md" and Path(p).parent == ev for p in paths)
+    assert not any(Path(p).name == "meta.json" for p in paths)
+
+
 def test_auto_accept_false_not_forced_in_consistency(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CENTBOT_ROOT", str(tmp_path))
     (tmp_path / "config").mkdir(parents=True)
