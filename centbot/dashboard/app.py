@@ -18,7 +18,17 @@ _panel_candidates = (
     install_root() / "centbot" / "dashboard" / "panel.html",
 )
 PANEL_PATH = next((p for p in _panel_candidates if p.exists()), _panel_candidates[0])
-DASHBOARD_HTML = PANEL_PATH.read_text(encoding="utf-8") if PANEL_PATH.exists() else "<h1>CENTBOT</h1>"
+
+
+def load_panel_html() -> str:
+    """Read panel.html fresh each call so START always serves the latest UI."""
+    path = next((p for p in _panel_candidates if p.exists()), PANEL_PATH)
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return "<h1>CENTBOT</h1>"
+
+
+DASHBOARD_HTML = load_panel_html()
 
 
 def _dashboard_state_path() -> Path:
@@ -39,7 +49,7 @@ def create_dashboard(
 
     @app.get("/")
     def index():
-        return render_template_string(DASHBOARD_HTML)
+        return render_template_string(load_panel_html())
 
     @app.get("/api/status")
     def status():

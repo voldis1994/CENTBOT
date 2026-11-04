@@ -370,9 +370,141 @@
       border-top: 1px solid var(--panel-border); padding-top: .55rem;
     }
 
+    /* Live pulse — physical proof the engine is working */
+    .pulse-banner {
+      display: grid; grid-template-columns: auto 1fr auto; gap: 1rem; align-items: center;
+      margin-bottom: 1rem; padding: 1rem 1.15rem;
+      border-radius: var(--radius);
+      border: 1px solid rgba(46,229,157,.28);
+      background:
+        radial-gradient(520px 180px at 0% 50%, rgba(46,229,157,.16), transparent 60%),
+        linear-gradient(120deg, rgba(14,28,42,.96), rgba(10,20,32,.94));
+      box-shadow: 0 12px 28px rgba(0,0,0,.2);
+    }
+    .pulse-banner.idle {
+      border-color: rgba(240,180,41,.3);
+      background:
+        radial-gradient(520px 180px at 0% 50%, rgba(240,180,41,.12), transparent 60%),
+        linear-gradient(120deg, rgba(14,28,42,.96), rgba(10,20,32,.94));
+    }
+    .pulse-banner.stopped {
+      border-color: rgba(255,93,108,.35);
+      background:
+        radial-gradient(520px 180px at 0% 50%, rgba(255,93,108,.12), transparent 60%),
+        linear-gradient(120deg, rgba(14,28,42,.96), rgba(10,20,32,.94));
+    }
+    .heartbeat {
+      width: 64px; height: 64px; border-radius: 50%;
+      display: grid; place-items: center; position: relative;
+      background: rgba(46,229,157,.12); border: 2px solid rgba(46,229,157,.55);
+    }
+    .heartbeat::before, .heartbeat::after {
+      content: ""; position: absolute; inset: -6px; border-radius: 50%;
+      border: 2px solid rgba(46,229,157,.35); opacity: 0;
+    }
+    .pulse-banner.working .heartbeat::before {
+      animation: ring 1.8s ease-out infinite;
+    }
+    .pulse-banner.working .heartbeat::after {
+      animation: ring 1.8s ease-out infinite .6s;
+    }
+    @keyframes ring {
+      0% { transform: scale(.85); opacity: .7; }
+      100% { transform: scale(1.35); opacity: 0; }
+    }
+    .heartbeat .core {
+      width: 18px; height: 18px; border-radius: 50%;
+      background: var(--green); box-shadow: 0 0 16px var(--green);
+    }
+    .pulse-banner.working .heartbeat .core { animation: thud 1.2s ease-in-out infinite; }
+    .pulse-banner.idle .heartbeat { border-color: rgba(240,180,41,.55); background: rgba(240,180,41,.1); }
+    .pulse-banner.idle .heartbeat .core { background: var(--amber); box-shadow: 0 0 12px var(--amber); }
+    .pulse-banner.stopped .heartbeat { border-color: rgba(255,93,108,.55); background: rgba(255,93,108,.1); }
+    .pulse-banner.stopped .heartbeat .core { background: var(--red); box-shadow: 0 0 12px var(--red); }
+    @keyframes thud {
+      0%, 100% { transform: scale(1); }
+      40% { transform: scale(1.25); }
+      60% { transform: scale(.92); }
+    }
+    .pulse-copy h3 { margin: 0; font-size: 1.15rem; font-weight: 750; }
+    .pulse-copy p { margin: .25rem 0 0; color: var(--muted); font-size: .82rem; }
+    .pulse-metrics {
+      display: flex; gap: .55rem; flex-wrap: wrap; justify-content: flex-end;
+    }
+    .pulse-chip {
+      min-width: 92px; padding: .55rem .7rem; border-radius: 12px;
+      background: rgba(255,255,255,.04); border: 1px solid rgba(120,170,210,.12);
+      text-align: right;
+    }
+    .pulse-chip span { display: block; color: var(--muted); font-size: .68rem; font-weight: 600; }
+    .pulse-chip strong {
+      display: block; margin-top: .15rem; font-family: var(--mono);
+      font-size: 1rem; font-weight: 700;
+    }
+    .comp-grid {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .55rem;
+    }
+    .comp {
+      display: flex; align-items: center; gap: .65rem;
+      padding: .7rem .75rem; border-radius: 12px;
+      background: rgba(255,255,255,.03); border: 1px solid rgba(120,170,210,.1);
+    }
+    .comp .lamp {
+      width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+      background: var(--muted);
+    }
+    .comp.ok .lamp { background: var(--green); box-shadow: 0 0 10px var(--green); }
+    .comp.warn .lamp { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+    .comp.bad .lamp { background: var(--red); box-shadow: 0 0 10px var(--red); }
+    .comp .meta { min-width: 0; }
+    .comp .meta strong { display: block; font-size: .82rem; }
+    .comp .meta span { display: block; color: var(--muted); font-size: .7rem; margin-top: .1rem; }
+    .cycle-bars {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; margin-top: .35rem;
+    }
+    .cycle-bar {
+      padding: .7rem .75rem; border-radius: 12px;
+      background: rgba(255,255,255,.03); border: 1px solid rgba(120,170,210,.1);
+    }
+    .cycle-bar span { display: block; color: var(--muted); font-size: .7rem; font-weight: 600; }
+    .cycle-bar strong {
+      display: block; margin-top: .2rem; font-family: var(--mono); font-size: 1.2rem;
+    }
+    .live-ticker {
+      max-height: 420px; overflow: auto; display: flex; flex-direction: column; gap: .45rem;
+    }
+    .ticker-item {
+      display: grid; grid-template-columns: 72px 1fr auto; gap: .55rem; align-items: start;
+      padding: .55rem .65rem; border-radius: 10px;
+      background: rgba(255,255,255,.03); border: 1px solid rgba(120,170,210,.08);
+      font-size: .8rem;
+    }
+    .ticker-item time { font-family: var(--mono); color: var(--muted); font-size: .7rem; }
+    .ticker-item .who { color: var(--cyan); font-weight: 650; }
+    .ticker-item.fresh {
+      animation: flashin .6s ease;
+      border-color: rgba(46,229,157,.35);
+    }
+    @keyframes flashin {
+      from { background: rgba(46,229,157,.18); }
+      to { background: rgba(255,255,255,.03); }
+    }
+    .wave {
+      height: 54px; width: 100%; border-radius: 10px; overflow: hidden;
+      background: rgba(0,0,0,.2); border: 1px solid rgba(120,170,210,.1);
+      margin-top: .75rem;
+    }
+    .wave svg { width: 100%; height: 100%; display: block; }
+
     @media (max-width: 1280px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
       .bottom { grid-template-columns: 1fr 1fr; }
+      .comp-grid { grid-template-columns: 1fr 1fr; }
+      .cycle-bars { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 720px) {
+      .pulse-banner { grid-template-columns: 1fr; text-align: left; }
+      .pulse-metrics { justify-content: flex-start; }
     }
     @media (max-width: 980px) {
       .shell { grid-template-columns: 1fr; }
@@ -420,6 +552,9 @@
         <button class="nav-btn" data-view="finance" type="button">
           <span class="nav-ico">₿</span> Finanses
         </button>
+        <button class="nav-btn" data-view="pulse" type="button">
+          <span class="nav-ico">◉</span> Darbība
+        </button>
         <button class="nav-btn" data-view="journal" type="button">
           <span class="nav-ico">≡</span> Žurnāls
         </button>
@@ -430,6 +565,7 @@
       <div class="sys-block">
         <h3>Sistēmas statuss</h3>
         <div class="sys-row"><span>Worker Engine</span><span class="pill-ok" id="sysWorker">…</span></div>
+        <div class="sys-row"><span>AI</span><span class="pill-ok" id="sysAi">…</span></div>
         <div class="sys-row"><span>Pārlūks</span><span class="pill-ok" id="sysBrowser">…</span></div>
         <div class="sys-row"><span>Android</span><span class="pill-ok" id="sysAndroid">…</span></div>
         <div class="sys-row"><span>Finanšu integrācijas</span><span class="pill-ok" id="sysFinance">…</span></div>
@@ -468,6 +604,18 @@
       </div>
 
       <section class="view active" id="view-overview">
+        <div class="pulse-banner stopped" id="overviewPulse" role="status" aria-live="polite">
+          <div class="heartbeat" aria-hidden="true"><span class="core"></span></div>
+          <div class="pulse-copy">
+            <h3 id="overviewPulseTitle">Pārbauda sistēmu…</h3>
+            <p id="overviewPulseSub">Gaida pirmo statusa atbildi no engine</p>
+          </div>
+          <div class="pulse-metrics">
+            <div class="pulse-chip"><span>Cikli</span><strong id="overviewPulseCycles">0</strong></div>
+            <div class="pulse-chip"><span>Pēdējais</span><strong id="overviewPulseAge">—</strong></div>
+            <div class="pulse-chip"><span>AI</span><strong id="overviewPulseAi">—</strong></div>
+          </div>
+        </div>
         <div class="stats">
           <article class="stat">
             <h3>Atrasti uzdevumi</h3>
@@ -630,6 +778,58 @@
         </section>
       </section>
 
+      <section class="view" id="view-pulse">
+        <div class="pulse-banner stopped" id="pulseHero" role="status" aria-live="polite">
+          <div class="heartbeat" aria-hidden="true"><span class="core"></span></div>
+          <div class="pulse-copy">
+            <h3 id="pulseTitle">Pārbauda sistēmu…</h3>
+            <p id="pulseSub">Šeit redzams, vai engine cikls fiziski notiek</p>
+          </div>
+          <div class="pulse-metrics">
+            <div class="pulse-chip"><span>Cikli</span><strong id="pulseCycles">0</strong></div>
+            <div class="pulse-chip"><span>Intervāls</span><strong id="pulseInterval">—</strong></div>
+            <div class="pulse-chip"><span>Kopš cikla</span><strong id="pulseAge">—</strong></div>
+          </div>
+        </div>
+        <div class="mid" style="grid-template-columns: 1.2fr .9fr">
+          <section class="panel">
+            <div class="panel-head"><h3>Komponentu lampiņas</h3><span class="pill-ok" id="pulseWorkingPill">—</span></div>
+            <div class="comp-grid" id="pulseComponents"></div>
+            <div class="wave" aria-hidden="true">
+              <svg viewBox="0 0 400 54" preserveAspectRatio="none" id="pulseWave">
+                <polyline id="pulseWaveLine" fill="none" stroke="#2ee59d" stroke-width="2"
+                  points="0,27 400,27"/>
+              </svg>
+            </div>
+            <p class="honesty">Zaļš pulss = engine cikls ir bijis pēdējo ~3 intervālu laikā. Ja pulss apstājas — START.bat / skaties žurnālu.</p>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h3>Pēdējais cikls</h3></div>
+            <div class="cycle-bars" id="pulseCycleBars">
+              <div class="cycle-bar"><span>Analizēti</span><strong id="pcAnalyzed">0</strong></div>
+              <div class="cycle-bar"><span>Palaisti</span><strong id="pcLaunched">0</strong></div>
+              <div class="cycle-bar"><span>Submit</span><strong id="pcSubmit">0</strong></div>
+              <div class="cycle-bar"><span>Workers</span><strong id="pcWorkers">0</strong></div>
+            </div>
+            <div class="panel-head" style="margin-top:1rem"><h3>AI statuss</h3></div>
+            <div class="comp ok" id="pulseAiBox">
+              <span class="lamp"></span>
+              <div class="meta"><strong id="pulseAiTitle">AI</strong><span id="pulseAiDetail">—</span></div>
+            </div>
+          </section>
+        </div>
+        <div class="mid" style="grid-template-columns: 1fr 1fr; margin-top:.85rem">
+          <section class="panel">
+            <div class="panel-head"><h3>Dzīvais notikumu plūsma</h3></div>
+            <div class="live-ticker" id="pulseTicker"><div class="empty">Gaida notikumus…</div></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h3>Nesenie uzdevumu soļi</h3></div>
+            <div class="live-ticker" id="pulseActions"><div class="empty">Vēl nav darbību</div></div>
+          </section>
+        </div>
+      </section>
+
       <section class="view" id="view-journal">
         <section class="panel">
           <div class="panel-head"><h3>Pilnais darbību žurnāls</h3></div>
@@ -688,6 +888,8 @@
   <script>
     let STATE = null;
     let taskFilter = "all";
+    let lastPulseTick = 0;
+    let wavePoints = Array.from({ length: 40 }, () => 27);
     const money = (n, cur="EUR") => {
       const v = Number(n || 0);
       const c = (cur || "EUR").toUpperCase();
@@ -954,6 +1156,12 @@
 
       document.getElementById("sysWorker").textContent = (s.workers?.active || 0) + " aktīvi";
       document.getElementById("sysBrowser").textContent = s.browser?.enabled ? (s.browser.headless ? "Headless" : "UI") : "OFF";
+      const aiEl = document.getElementById("sysAi");
+      if (aiEl) {
+        const ai = s.pulse?.ai || s.ai || {};
+        aiEl.textContent = ai.label_lv || (ai.enabled ? (ai.ollama ? "Ollama" : "Heuristika") : "OFF");
+        aiEl.className = ai.enabled ? "pill-ok" : "pill-bad";
+      }
       const andEl = document.getElementById("sysAndroid");
       const finEl = document.getElementById("sysFinance");
       const androidEnabled = s.settings?.android_enabled !== false && s.android?.enabled !== false;
@@ -1097,11 +1305,124 @@
       renderTasks();
       renderLog(document.getElementById("actionLog"), (s.journal || []).slice(-12));
       renderLog(document.getElementById("fullLog"), s.journal || []);
+      renderPulse(s);
       const income = s.finance?.income || [];
       document.getElementById("incomeLog").innerHTML = income.length
         ? income.map(r => `<div class="log-item"><time>${esc(String(r.kind||"").slice(0,6))}</time><div class="ok">${esc(money(r.amount, r.currency||cur))} · ${esc(r.platform||"")} · ${esc(r.tx_ref||"")}</div></div>`).join("")
         : `<div class="empty">Nav ledger ierakstu — peļņa nav izdomāta</div>`;
       renderAlerts(s.alerts || [], ready);
+    }
+
+    function fmtAge(sec) {
+      if (sec == null || Number.isNaN(Number(sec))) return "—";
+      const n = Number(sec);
+      if (n < 5) return "tagad";
+      if (n < 60) return Math.round(n) + "s";
+      if (n < 3600) return Math.floor(n / 60) + "m";
+      return Math.floor(n / 3600) + "h";
+    }
+
+    function setPulseBanner(el, pulse) {
+      if (!el) return;
+      el.classList.remove("working", "idle", "stopped");
+      if (pulse.working) el.classList.add("working");
+      else if (pulse.engine_running) el.classList.add("idle");
+      else el.classList.add("stopped");
+    }
+
+    function renderPulse(s) {
+      const pulse = s.pulse || {};
+      const ai = pulse.ai || s.ai || {};
+      const last = pulse.last_cycle || {};
+      setPulseBanner(document.getElementById("overviewPulse"), pulse);
+      setPulseBanner(document.getElementById("pulseHero"), pulse);
+      const title = pulse.label_lv || "Sistēmas statuss";
+      const ageTxt = fmtAge(pulse.seconds_since_cycle);
+      const sub = pulse.working
+        ? `Engine cikls #${pulse.cycles || 0} · pēdējais pirms ${ageTxt} · režīms ${esc(s.mode || "—")}`
+        : (pulse.engine_running
+          ? `Engine ir ieslēgts, bet cikls vēl nav svaigs (pēdējais: ${ageTxt})`
+          : "Engine nav run_forever — palaid START.bat");
+      const ovTitle = document.getElementById("overviewPulseTitle");
+      const ovSub = document.getElementById("overviewPulseSub");
+      if (ovTitle) ovTitle.textContent = title;
+      if (ovSub) ovSub.textContent = sub;
+      const setTxt = (id, v) => { const n = document.getElementById(id); if (n) n.textContent = v; };
+      setTxt("overviewPulseCycles", String(pulse.cycles || s.cycles || 0));
+      setTxt("overviewPulseAge", ageTxt);
+      setTxt("overviewPulseAi", ai.enabled ? (ai.mode === "ollama" ? "Ollama" : "Heur.") : "OFF");
+      setTxt("pulseTitle", title);
+      setTxt("pulseSub", sub);
+      setTxt("pulseCycles", String(pulse.cycles || s.cycles || 0));
+      setTxt("pulseInterval", (pulse.cycle_interval_seconds || 30) + "s");
+      setTxt("pulseAge", ageTxt);
+      setTxt("pcAnalyzed", String(last.analyzed ?? 0));
+      setTxt("pcLaunched", String(last.launched ?? 0));
+      setTxt("pcSubmit", String(last.submissions ?? 0));
+      setTxt("pcWorkers", String(last.active_workers ?? s.workers?.active ?? 0));
+      const pill = document.getElementById("pulseWorkingPill");
+      if (pill) {
+        pill.textContent = pulse.working ? "STRĀDĀ" : (pulse.engine_running ? "GAIDA" : "STOP");
+        pill.className = pulse.working ? "pill-ok" : (pulse.engine_running ? "pill-warn" : "pill-bad");
+      }
+      const comps = pulse.components || {};
+      const box = document.getElementById("pulseComponents");
+      if (box) {
+        const order = ["engine", "ai", "discovery", "workers", "browser", "android"];
+        box.innerHTML = order.map((key) => {
+          const c = comps[key] || {};
+          const ok = !!c.ok;
+          const warn = key === "android" && !ok;
+          const cls = ok ? "ok" : (warn ? "warn" : "bad");
+          return `<div class="comp ${cls}"><span class="lamp"></span><div class="meta"><strong>${esc(c.label || key)}</strong><span>${ok ? "aktīvs" : "pārbaudīt"}</span></div></div>`;
+        }).join("");
+      }
+      const aiBox = document.getElementById("pulseAiBox");
+      if (aiBox) {
+        aiBox.className = "comp " + (ai.enabled ? "ok" : "bad");
+        setTxt("pulseAiTitle", ai.label_lv || "AI");
+        setTxt("pulseAiDetail", ai.enabled
+          ? (ai.ollama ? "Ollama pieejams — bagātināta analīze" : "Heuristika (Ollama nav — tas ir OK)")
+          : "Izslēgts config — uzdevumi netiek AI plānoti");
+      }
+      // Waveform: bump on new cycle tick / working state
+      const activity = pulse.working ? 18 : (pulse.engine_running ? 8 : 2);
+      const bump = (typeof last.analyzed === "number" ? Math.min(14, last.analyzed) : 0)
+        + (typeof last.launched === "number" ? Math.min(10, last.launched * 2) : 0);
+      wavePoints.push(27 - activity - bump + Math.random() * 4);
+      if (wavePoints.length > 40) wavePoints.shift();
+      const pts = wavePoints.map((y, i) => `${(i / (wavePoints.length - 1)) * 400},${y}`).join(" ");
+      const line = document.getElementById("pulseWaveLine");
+      if (line) {
+        line.setAttribute("points", pts);
+        line.setAttribute("stroke", pulse.working ? "#2ee59d" : (pulse.engine_running ? "#f0b429" : "#ff5d6c"));
+      }
+      const fresh = (pulse.tick || 0) !== lastPulseTick;
+      lastPulseTick = pulse.tick || 0;
+      const journal = (s.journal || []).slice().reverse().slice(0, 18);
+      const ticker = document.getElementById("pulseTicker");
+      if (ticker) {
+        ticker.innerHTML = journal.length
+          ? journal.map((j, idx) => {
+              const t = String(j.ts || j.time || j.created_at || "").slice(11, 19) || "—";
+              const action = j.action || j.event || j.type || "event";
+              const status = j.status || j.result || "";
+              const extra = j.task_id ? ` · task ${j.task_id}` : (j.message ? ` · ${String(j.message).slice(0, 60)}` : "");
+              const cls = status === "error" || status === "failed" ? "err" : (status === "warn" || status === "warning" ? "warn" : "ok");
+              return `<div class="ticker-item ${fresh && idx < 3 ? "fresh" : ""}"><time>${esc(t)}</time><div><span class="who">${esc(action)}</span> <span class="${cls}">${esc(status)}</span>${esc(extra)}</div><div>${esc(j.platform || "")}</div></div>`;
+            }).join("")
+          : `<div class="empty">Vēl nav žurnāla ierakstu — pēc START.bat te parādīsies cikli</div>`;
+      }
+      const actions = pulse.recent_actions || [];
+      const actBox = document.getElementById("pulseActions");
+      if (actBox) {
+        actBox.innerHTML = actions.length
+          ? actions.map(a => {
+              const t = String(a.updated_at || "").slice(11, 19) || "—";
+              return `<div class="ticker-item"><time>${esc(t)}</time><div><span class="who">${esc(a.platform || "")}</span> ${esc((a.title || "").slice(0, 48))}</div><div>${esc(a.status || "")}</div></div>`;
+            }).join("")
+          : `<div class="empty">Kad sistēma ņem uzdevumus, soļi parādīsies šeit</div>`;
+      }
     }
 
     async function refresh() {
