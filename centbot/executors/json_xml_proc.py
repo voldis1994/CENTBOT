@@ -34,7 +34,25 @@ class JsonXmlProcessor(Executor):
             payload = {tree.getroot().tag: tree.getroot().text}
             out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             return ExecutionResult(ok=True, category=self.category, output={"root": tree.getroot().tag}, artifacts=[str(out)])
-        return ExecutionResult(ok=False, category=self.category, error="missing_input:input.json|input.xml")
+        from centbot.quality.task_intent import is_create_output_task, missing_input_error
+
+        if is_create_output_task(task, extensions=(".json", ".xml")):
+            # Task asks to produce JSON/XML — synthesize a structured deliverable from the brief
+            payload = {
+                "title": task.get("title"),
+                "description": task.get("description"),
+                "generated_by": "CENTBOT",
+                "platform": task.get("platform"),
+                "external_id": task.get("external_id"),
+            }
+            out = workdir / "output.json"
+            out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return ExecutionResult(ok=True, category=self.category, output={"generated": True}, artifacts=[str(out)])
+        return ExecutionResult(
+            ok=False,
+            category=self.category,
+            error=missing_input_error(["input.json", "input.xml"]),
+        )
 
     def _to_xml(self, parent: Element, data: Any) -> None:
         if isinstance(data, dict):

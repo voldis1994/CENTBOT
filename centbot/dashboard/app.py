@@ -31,6 +31,9 @@ def create_dashboard(
     *,
     ack_alert: Callable[[int], bool] | None = None,
     update_settings: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    android_start: Callable[[str], dict[str, Any]] | None = None,
+    android_stop: Callable[[str], dict[str, Any]] | None = None,
+    android_recover: Callable[[], dict[str, Any]] | None = None,
 ) -> Flask:
     app = Flask("centbot_dashboard")
 
@@ -61,6 +64,24 @@ def create_dashboard(
             return jsonify({"ok": False, "error": "settings_unavailable"}), 501
         payload = request.get_json(silent=True) or {}
         return jsonify(update_settings(payload))
+
+    @app.post("/api/android/start/<path:avd>")
+    def android_start_one(avd: str):
+        if android_start is None:
+            return jsonify({"ok": False, "error": "android_control_unavailable"}), 501
+        return jsonify(android_start(avd))
+
+    @app.post("/api/android/stop/<path:avd>")
+    def android_stop_one(avd: str):
+        if android_stop is None:
+            return jsonify({"ok": False, "error": "android_control_unavailable"}), 501
+        return jsonify(android_stop(avd))
+
+    @app.post("/api/android/recover")
+    def android_recover_all():
+        if android_recover is None:
+            return jsonify({"ok": False, "error": "android_control_unavailable"}), 501
+        return jsonify(android_recover())
 
     return app
 

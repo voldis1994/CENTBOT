@@ -107,16 +107,28 @@ if not defined ANDROID_HOME if exist "%LOCALAPPDATA%\Android\Sdk\platform-tools\
 
 echo [CENTBOT] Starting LIVE with Python ^(exe disabled^)...
 echo [CENTBOT] TLS CA: %SSL_CERT_FILE%
-echo [CENTBOT] Fast start: Android emulator boot SKIPPED ^(PC claims OK^).
-echo [CENTBOT]            Emulators: set CENTBOT_START_EMULATORS=1 or START with --with-emulators
-REM Skip heavy pip/import noise — engine + panel should appear within ~15s
-"%PY%" -m centbot.windows.start --skip-emulators
+
+REM Emulators: default ON when android.enabled (config). Opt-out: CENTBOT_START_EMULATORS=0 or --skip-emulators
+REM Force ON: CENTBOT_START_EMULATORS=1 (wins over --skip-emulators)
+set "START_ARGS="
+if /I "%CENTBOT_START_EMULATORS%"=="0" set "START_ARGS=--skip-emulators"
+if /I "%CENTBOT_START_EMULATORS%"=="false" set "START_ARGS=--skip-emulators"
+if /I "%CENTBOT_START_EMULATORS%"=="1" set "START_ARGS=--with-emulators"
+if /I "%CENTBOT_START_EMULATORS%"=="true" set "START_ARGS=--with-emulators"
+if /I "%CENTBOT_START_EMULATORS%"=="yes" set "START_ARGS=--with-emulators"
+echo [CENTBOT] Android start args: %START_ARGS% ^(empty = follow android.enabled^)
+
+"%PY%" -m centbot.windows.start %START_ARGS%
 set "EC=%ERRORLEVEL%"
 if "%EC%"=="0" (
   echo [CENTBOT] OK. Panel: http://127.0.0.1:8787/  ^(also data\runtime\dashboard.json^)
+  if exist "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" (
+    echo [CENTBOT] ADB devices:
+    "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" devices -l
+  )
 ) else (
   echo [CENTBOT] Start failed %EC%. See logs\engine.stderr.log
-  echo [CENTBOT] Try: STOP.bat  then  FIX_NOW.bat  /  FULL_SYSTEM.bat
+  echo [CENTBOT] Try: STOP.bat  then  FIX_NOW.bat  /  FULL_SYSTEM.bat / INSTALL_ANDROID.bat
   if exist logs\engine.stderr.log (
     echo ---- last stderr lines ----
     powershell -NoProfile -Command "Get-Content -Path 'logs\engine.stderr.log' -Tail 25 -ErrorAction SilentlyContinue"

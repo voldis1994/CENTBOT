@@ -73,7 +73,7 @@ def recommended_emulator_count(ram_gb: float, physical_cores: int) -> int:
 
 def virtualization_supported() -> dict[str, Any]:
     """Best-effort HV / VT-x / AMD-V detection (Windows-focused)."""
-    info: dict[str, Any] = {"ok": False, "method": None, "detail": None}
+    info: dict[str, Any] = {"ok": False, "method": None, "detail": None, "hyper_v": None, "whpx": None}
     if platform.system().lower() != "windows":
         # Linux KVM presence is informative only — not Windows install proof
         info["ok"] = os.path.exists("/dev/kvm")
@@ -88,17 +88,90 @@ def virtualization_supported() -> dict[str, Any]:
             info["ok"] = True
             info["method"] = "systeminfo"
             info["detail"] = "Virtualization reported available"
-            return info
-        if "virtualization enabled in firmware: no" in lower:
+        elif "virtualization enabled in firmware: no" in lower:
             info["ok"] = False
             info["method"] = "systeminfo"
-            info["detail"] = "Virtualization disabled in firmware"
+            info["detail"] = "Virtualization disabled in firmware — enable VT-x/AMD-V in BIOS"
             return info
     except (OSError, subprocess.SubprocessError) as exc:
         info["detail"] = f"systeminfo_failed:{exc}"
-    # Fallback: assume unknown
-    info["detail"] = info.get("detail") or "Could not confirm virtualization; enable VT-x/AMD-V and Hyper-V/WHPX"
+
+    # Windows features: Hyper-V + Windows Hypervisor Platform (needed by Android Emulator WHPX)
+    features = windows_hypervisor_features()
+    info["hyper_v"] = features.get("hyper_v")
+    info["whpx"] = features.get("whpx")
+    if features.get("whpx") or features.get("hyper_v"):
+        info["ok"] = True
+        info["method"] = info.get("method") or "windows_features"
+        info["detail"] = features.get("detail") or "Hypervisor feature present"
+    if not info.get("detail"):
+        info["detail"] = "Could not confirm virtualization; enable VT-x/AMD-V and Hyper-V/WHPX"
     return info
+
+
+def windows_hypervisor_features() -> dict[str, Any]:
+    """Detect Hyper-V and Windows Hypervisor Platform optional features."""
+    out: dict[str, Any] = {"hyper_v": None, "whpx": None, "detail": None}
+    if platform.system().lower() != "windows":
+        return out
+    ps = (
+        "$names=@('Microsoft-Hyper-V-All','HypervisorPlatform','Microsoft-Windows-Subsystem-Linux');"
+        "Get-WindowsOptionalFeature -Online -ErrorAction SilentlyContinue |"
+        "Where-Object { $_.FeatureName -match 'Hyper-V|HypervisorPlatform' } |"
+        "Select-Object FeatureName,State | ConvertTo-Json -Compress"
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        raw = (proc.stdout or "").strip()
+        if not raw:
+            out["detail"] = "feature_query_empty"
+            return out
+        import json
+
+        data = json.loads(raw)
+        rows = data if isinstance(data, list) else [data]
+        for row in rows:
+            name = str(row.get("FeatureName") or "")
+            state = str(row.get("State") or "").lower()
+            enabled = state in {"enabled", "enablepending"}
+            if "HypervisorPlatform" in name:
+                out["whpx"] = enabled
+            if "Hyper-V" in name:
+                out["hyper_v"] = enabled or out.get("hyper_v")
+        out["detail"] = f"hyper_v={out['hyper_v']} whpx={out['whpx']}"
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        out["detail"] = f"feature_query_failed:{exc}"
+    return out
+
+
+def java_jdk_status() -> dict[str, Any]:
+    """Locate a JDK usable by Android cmdline-tools (sdkmanager needs Java 17+)."""
+    java = shutil.which("java")
+    javac = shutil.which("javac")
+    version = None
+    if java:
+        try:
+            proc = subprocess.run([java, "-version"], capture_output=True, text=True, timeout=15, check=False)
+            blob = (proc.stderr or proc.stdout or "").strip().splitlines()
+            version = blob[0] if blob else None
+        except (OSError, subprocess.SubprocessError):
+            version = None
+    java_home = os.environ.get("JAVA_HOME", "").strip() or None
+    ok = bool(java)
+    return {
+        "ok": ok,
+        "java": java,
+        "javac": javac,
+        "JAVA_HOME": java_home,
+        "version": version,
+        "hint": None if ok else "Install Temurin JDK 17+ (winget install EclipseAdoptium.Temurin.17.JDK)",
+    }
 
 
 def full_hw_report(path: str | None = None) -> dict[str, Any]:
@@ -107,6 +180,7 @@ def full_hw_report(path: str | None = None) -> dict[str, Any]:
     ram = ram_info()
     disk = disk_info(path)
     virt = virtualization_supported()
+    jdk = java_jdk_status()
     blockers: list[str] = []
     if not win["is_windows"]:
         blockers.append("not_windows_host")
@@ -118,13 +192,22 @@ def full_hw_report(path: str | None = None) -> dict[str, Any]:
         blockers.append("ram_below_12gb_for_four_emulators")
     if not cpu["ok_for_four_emulators"]:
         blockers.append("cpu_below_4_cores_for_four_emulators")
+    if not jdk["ok"] and win["is_windows"]:
+        blockers.append("jdk_missing")
+    rec = recommended_emulator_count(ram["total_gb"], cpu["physical_cores"])
+    # Disk can also force a lower count
+    if disk["free_gb"] < 40 and rec > 2:
+        rec = min(rec, 2)
+    if disk["free_gb"] < 30 and rec > 1:
+        rec = min(rec, 1)
     return {
         "windows": win,
         "cpu": cpu,
         "ram": ram,
         "disk": disk,
         "virtualization": virt,
-        "recommended_emulators": ram["recommended_emulators"],
+        "jdk": jdk,
+        "recommended_emulators": rec,
         "blockers": blockers,
         "can_attempt_setup": True,  # components can still install; emulator count may be reduced
     }

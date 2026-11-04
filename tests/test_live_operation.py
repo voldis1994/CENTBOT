@@ -177,8 +177,21 @@ def test_cli_mode_live_alone_does_not_force_dry_run(tmp_path: Path, monkeypatch,
 
 
 def test_schedule_live_attempts_accept_and_surfaces_failure(tmp_path: Path):
-    """Live must attempt real claims even when readiness is incomplete — so failures are visible."""
-    engine = _mk_engine(tmp_path, mode="live", auto_accept=False, wallet="")
+    """Live attempts real claims when auto_accept=true; auto_accept=false must not be forced on."""
+    # auto_accept=false → no accept attempts (requirement #34)
+    blocked = _mk_engine(tmp_path / "blocked", mode="live", auto_accept=False, wallet="")
+    blocked.db.execute(
+        "INSERT INTO tasks(id, platform, external_id, title, description, category, status, "
+        "reward_amount, reward_currency, priority, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))",
+        ("t-block", "jobbi", "ext-0", "real gig", "do work", "text", "eligible", 10.0, "USD", 90),
+    )
+    blocked.platforms = {}
+    blocked.acceptor.platforms = {}
+    assert blocked.schedule_eligible() == 0
+    blocked.shutdown()
+
+    engine = _mk_engine(tmp_path / "live", mode="live", auto_accept=True, wallet="")
     engine.db.execute(
         "INSERT INTO tasks(id, platform, external_id, title, description, category, status, "
         "reward_amount, reward_currency, priority, created_at, updated_at) "
@@ -208,7 +221,7 @@ def test_schedule_live_attempts_accept_and_surfaces_failure(tmp_path: Path):
     engine.acceptor.platforms = engine.platforms
     launched = engine.schedule_eligible()
     assert launched == 0
-    assert len(accept_calls) == 1  # real claim attempted
+    assert len(accept_calls) == 1  # real claim attempted when auto_accept true
     row = engine.db.fetchone("SELECT status FROM tasks WHERE id=?", ("t-live",))
     assert row["status"] == "eligible"  # never faked as accepted
     alerts = engine.db.fetchall("SELECT message FROM alerts")
@@ -217,7 +230,7 @@ def test_schedule_live_attempts_accept_and_surfaces_failure(tmp_path: Path):
 
 
 def test_schedule_live_accepts_when_platform_ok(tmp_path: Path):
-    engine = _mk_engine(tmp_path, mode="live", auto_accept=False, wallet="0x" + "11" * 20)
+    engine = _mk_engine(tmp_path, mode="live", auto_accept=True, wallet="0x" + "11" * 20)
     engine.db.execute(
         "INSERT INTO tasks(id, platform, external_id, title, description, category, status, "
         "reward_amount, reward_currency, priority, created_at, updated_at) "

@@ -256,24 +256,22 @@ class TaskMarketConnector(PlatformConnector):
             return _claim_http_error(exc, task.external_id)
 
     def submit_result(self, task: PlatformTask, payload: dict[str, Any]) -> dict[str, Any]:
+        """Submit per OpenAPI: workerAddress + artifacts[{fileName,mimeType,file}] + signature."""
         if not self.wallet:
             return {"ok": False, "error": "wallet_required"}
+        artifacts = _build_taskmarket_artifacts(payload)
+        if not artifacts:
+            return {
+                "ok": False,
+                "error": "artifacts_required",
+                "hint": "TaskMarket API requires artifacts[] with fileName, mimeType, file (base64).",
+            }
         msg = taskmarket_submit_message(task.external_id)
         sig = _sig_hex(self.wallet.sign_message(msg))
-        content = payload.get("content")
-        if content is None:
-            content = payload.get("output")
-        if content is None:
-            content = {"summary": payload.get("summary"), "evidence": payload.get("evidence")}
-        if not isinstance(content, str):
-            import json
-
-            content = json.dumps(content, ensure_ascii=False)
         body = {
-            "taskId": task.external_id,
             "workerAddress": self.wallet.address,
             "signature": sig,
-            "content": content,
+            "artifacts": artifacts,
         }
         try:
             result = self.client.post_json(
@@ -386,6 +384,88 @@ def _claim_http_error(exc: PlatformHTTPError, external_id: str) -> dict[str, Any
         "code": code or None,
         "external_id": external_id,
     }
+
+
+def _guess_mime(path: str) -> str:
+    import mimetypes
+
+    mime, _ = mimetypes.guess_type(path)
+    return mime or "application/octet-stream"
+
+
+def _build_taskmarket_artifacts(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """Build OpenAPI artifacts array from local file paths or inline content."""
+    import base64
+    from pathlib import Path
+
+    artifacts: list[dict[str, str]] = []
+    # Prefer explicit artifact file paths from execution
+    paths: list[str] = []
+    for key in ("artifacts", "files", "evidence_files"):
+        val = payload.get(key)
+        if isinstance(val, list):
+            paths.extend(str(x) for x in val if x)
+        elif isinstance(val, str) and val:
+            paths.append(val)
+    evidence = payload.get("evidence")
+    if evidence:
+        paths.append(str(evidence))
+    seen: set[str] = set()
+    for raw in paths:
+        p = Path(raw)
+        if not p.is_file():
+            continue
+        key = str(p.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        data = p.read_bytes()
+        # Skip empty / oversized (>~2MB inline safety)
+        if not data or len(data) > 2_000_000:
+            continue
+        role = "final" if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"} else "attachment"
+        if p.name.lower().startswith("thumb"):
+            role = "preview"
+        artifacts.append(
+            {
+                "fileName": p.name[:255],
+                "mimeType": _guess_mime(str(p))[:120],
+                "role": role,
+                "file": base64.b64encode(data).decode("ascii"),
+            }
+        )
+        if len(artifacts) >= 20:
+            break
+    if artifacts:
+        return artifacts
+    # Fallback: package textual content as result.json artifact (still satisfies artifacts: Required)
+    import json
+
+    content = payload.get("content")
+    if content is None:
+        content = payload.get("output")
+    if content is None:
+        content = {"summary": payload.get("summary"), "evidence": payload.get("evidence")}
+    if not isinstance(content, (str, bytes)):
+        content = json.dumps(content, ensure_ascii=False, indent=2)
+    if isinstance(content, str):
+        raw_bytes = content.encode("utf-8")
+        mime = "application/json" if content.lstrip().startswith(("{", "[")) else "text/plain"
+        name = "result.json" if mime == "application/json" else "result.txt"
+    else:
+        raw_bytes = content
+        mime = "application/octet-stream"
+        name = "result.bin"
+    if not raw_bytes:
+        return []
+    return [
+        {
+            "fileName": name,
+            "mimeType": mime,
+            "role": "final",
+            "file": base64.b64encode(raw_bytes).decode("ascii"),
+        }
+    ]
 
 
 def _title_from_description(desc: Any) -> str:

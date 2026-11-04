@@ -67,9 +67,17 @@ def run_python_isolated(
     *,
     require_container: bool | None = None,
 ) -> dict[str, Any]:
-    """Run Python confined to ``workdir`` inside a container when available."""
+    """Run Python confined to ``workdir`` inside a container when available.
+
+    Android emulator/ADB processes must stay on the Windows host — never pass
+    adb/emulator binaries into the container sandbox (resource + KVM conflicts).
+    """
     workdir = Path(workdir or tempfile.mkdtemp(prefix="centbot-sandbox-"))
     workdir.mkdir(parents=True, exist_ok=True)
+    # Strip Android SDK host tools from sandbox env to avoid accidental nested use
+    if extra_env:
+        for drop in ("ANDROID_HOME", "ANDROID_SDK_ROOT", "CENTBOT_ADB", "CENTBOT_EMULATOR"):
+            extra_env.pop(drop, None)
     if script_path is None:
         script_path = workdir / "_run.py"
         script_path.write_text(code or "print('ok')", encoding="utf-8")

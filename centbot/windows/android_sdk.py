@@ -177,19 +177,109 @@ def persist_android_config(tools: dict[str, Any]) -> dict[str, Any]:
         from centbot.core.config import Config
 
         cfg = Config()
+        adb = tools.get("adb") or "adb"
+        emu = tools.get("emulator") or "emulator"
+        # Prefer absolute paths so START works without relying on user PATH
+        try:
+            from pathlib import Path as _P
+
+            if adb and _P(adb).is_file():
+                adb = str(_P(adb).resolve())
+            if emu and _P(emu).is_file():
+                emu = str(_P(emu).resolve())
+        except OSError:
+            pass
         patch = {
             "android": {
                 "enabled": True,
-                "adb_path": tools.get("adb") or "adb",
-                "emulator_path": tools.get("emulator") or "emulator",
+                "adb_path": adb,
+                "emulator_path": emu,
             }
         }
         if tools.get("sdk_root"):
-            patch["android"]["sdk_root"] = tools["sdk_root"]
+            patch["android"]["sdk_root"] = str(tools["sdk_root"])
         path = cfg.save_local(patch)
-        return {"ok": True, "path": str(path)}
+        return {"ok": True, "path": str(path), "adb_path": adb, "emulator_path": emu}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+def ensure_jdk(*, assume_yes: bool = True) -> dict[str, Any]:
+    """Ensure a Java JDK is available for sdkmanager (Temurin 17 via winget on Windows)."""
+    from centbot.windows.hwcheck import java_jdk_status
+
+    status = java_jdk_status()
+    if status.get("ok"):
+        return {"ok": True, "skipped": True, **status}
+    if not sys.platform.startswith("win") or not assume_yes:
+        return {"ok": False, "error": "jdk_missing", **status}
+    winget = shutil.which("winget")
+    if not winget:
+        return {"ok": False, "error": "winget_missing", **status}
+    install = _run(
+        [
+            winget,
+            "install",
+            "--id",
+            "EclipseAdoptium.Temurin.17.JDK",
+            "-e",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+        ],
+        timeout=1800,
+    )
+    refreshed = java_jdk_status()
+    return {"ok": bool(refreshed.get("ok")), "install": install, **refreshed}
+
+
+def persist_windows_user_path(sdk_root: Path) -> dict[str, Any]:
+    """Append SDK platform-tools/emulator/cmdline-tools to the user PATH via setx (Windows)."""
+    if not sys.platform.startswith("win"):
+        return {"ok": True, "skipped": True, "reason": "not_windows"}
+    dirs = [
+        str(sdk_root / "platform-tools"),
+        str(sdk_root / "emulator"),
+        str(sdk_root / "cmdline-tools" / "latest" / "bin"),
+    ]
+    existing = os.environ.get("PATH", "")
+    added: list[str] = []
+    for d in dirs:
+        if d.lower() not in existing.lower() and Path(d).is_dir():
+            added.append(d)
+    if not added:
+        return {"ok": True, "added": [], "note": "already_on_path"}
+    new_path = os.pathsep.join(added + [existing])
+    # setx truncates at 1024 chars — only prepend our dirs to User PATH variable carefully
+    try:
+        user_path_proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "[Environment]::GetEnvironmentVariable('Path','User')"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        user_path = (user_path_proc.stdout or "").strip()
+        pieces = [p for p in user_path.split(";") if p]
+        for d in added:
+            if d not in pieces:
+                pieces.insert(0, d)
+        joined = ";".join(pieces)
+        set_proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"[Environment]::SetEnvironmentVariable('Path', '{joined.replace(chr(39), chr(39)+chr(39))}', 'User')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        os.environ["PATH"] = new_path
+        return {"ok": set_proc.returncode == 0, "added": added, "stderr": (set_proc.stderr or "")[-500:]}
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "error": str(exc), "added": added}
 
 
 def _run(cmd: list[str], *, timeout: int = 600, input_text: str | None = None) -> dict[str, Any]:
@@ -291,6 +381,14 @@ def install_android_stack(
 ) -> dict[str, Any]:
     """Full Windows Android lane: cmdline-tools → packages → AVDs → env/config."""
     steps: list[dict[str, Any]] = []
+    from centbot.windows.hwcheck import full_hw_report
+
+    hw = full_hw_report()
+    steps.append({"step": "hw", "result": {k: hw.get(k) for k in ("recommended_emulators", "blockers", "jdk", "virtualization", "ram", "cpu", "disk")}})
+
+    jdk = ensure_jdk(assume_yes=assume_yes)
+    steps.append({"step": "jdk", "result": jdk})
+
     sdk_root = default_sdk_root()
     tools = resolve_sdk_tools(sdk_root)
     steps.append({"step": "detect", "result": dict(tools)})
@@ -362,6 +460,13 @@ def install_android_stack(
         }
         steps.append({"step": "avds", "result": avd_result})
 
+    path_persist = {"ok": True, "skipped": True}
+    if tools.get("sdk_root"):
+        path_persist = persist_windows_user_path(Path(str(tools["sdk_root"])))
+        os.environ["ANDROID_HOME"] = str(tools["sdk_root"])
+        os.environ["ANDROID_SDK_ROOT"] = str(tools["sdk_root"])
+        steps.append({"step": "user_path", "result": path_persist})
+
     env_file = write_android_env(tools, root=project_root)
     cfg = persist_android_config(tools) if tools.get("ok") else {"ok": False, "skipped": True}
     steps.append({"step": "persist", "result": {"env": str(env_file) if env_file else None, "config": cfg}})
@@ -371,8 +476,10 @@ def install_android_stack(
         "ok": ok,
         "tools": tools,
         "avds": avd_result,
+        "hw": hw,
         "steps": steps,
         "env_file": str(env_file) if env_file else None,
+        "ANDROID_HOME": tools.get("sdk_root"),
         "hint_lv": (
             "Android SDK gatavs — STOP.bat un START.bat, lai palaistu CENTBOT_ANDROID emulatorus."
             if ok

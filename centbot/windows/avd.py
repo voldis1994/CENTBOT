@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,6 +20,8 @@ AVD_NAMES = [
 
 DEFAULT_PACKAGE = "system-images;android-30;google_apis;x86_64"
 DEFAULT_DEVICE = "pixel_4"
+# Fallback device profiles if pixel_4 is unavailable on the host SDK
+DEVICE_FALLBACKS = ("pixel_4", "pixel_3a", "pixel", "pixel_5")
 
 Runner = Callable[[list[str], dict[str, Any] | None], dict[str, Any]]
 
@@ -94,31 +95,30 @@ def ensure_centbot_avds(
             "windows": sys.platform.startswith("win"),
         }
 
-    # Ensure system image
+    # Ensure system image (idempotent — sdkmanager skips installed packages)
     run([sdkmanager, "--install", package], {"timeout": 1800})
 
+    device_profile = device
     for name in names:
         if name in existing:
             skipped.append(name)
+            # Still refresh non-destructive tweaks on existing AVDs
+            _write_avd_config_tweaks(name, hw=hw)
             continue
-        # echo no | avdmanager create avd -n NAME -k PACKAGE -d DEVICE --force
-        cmd = [avdmanager, "create", "avd", "-n", name, "-k", package, "-d", device, "--force"]
-        # Non-interactive: feed "no" for custom hardware profile prompt when present
-        try:
-            proc = subprocess.run(
-                cmd,
-                input="no\n",
-                capture_output=True,
-                text=True,
-                timeout=180,
-                check=False,
-            )
-            result = {"ok": proc.returncode == 0, "stdout": proc.stdout[-1000:], "stderr": proc.stderr[-1000:]}
-        except (OSError, subprocess.SubprocessError) as exc:
-            result = {"ok": False, "error": str(exc)}
+        # Never pass --force for existing names (already skipped). Create new only.
+        result = _create_avd(avdmanager, name, package, device_profile)
+        if not result.get("ok"):
+            # Retry with alternate Pixel device profiles
+            for alt in DEVICE_FALLBACKS:
+                if alt == device_profile:
+                    continue
+                result = _create_avd(avdmanager, name, package, alt)
+                if result.get("ok"):
+                    device_profile = alt
+                    break
         if result.get("ok"):
             created.append(name)
-            _write_avd_config_tweaks(name)
+            _write_avd_config_tweaks(name, hw=hw)
         else:
             errors.append({"avd": name, "result": result})
 
@@ -143,19 +143,57 @@ def ensure_centbot_avds(
     }
 
 
-def _write_avd_config_tweaks(avd_name: str) -> None:
-    """Optimize RAM/graphics for multi-instance when config.ini is found."""
+def _create_avd(avdmanager: str, name: str, package: str, device: str) -> dict[str, Any]:
+    """Create one AVD without overwriting an existing definition."""
+    cmd = [avdmanager, "create", "avd", "-n", name, "-k", package, "-d", device]
+    try:
+        proc = subprocess.run(
+            cmd,
+            input="no\n",
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "stdout": (proc.stdout or "")[-1000:],
+            "stderr": (proc.stderr or "")[-1000:],
+            "device": device,
+            "cmd": cmd,
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "error": str(exc), "device": device, "cmd": cmd}
+
+
+def _write_avd_config_tweaks(avd_name: str, hw: dict[str, Any] | None = None) -> None:
+    """Optimize RAM/CPU/graphics/disk for multi-instance when config.ini is found."""
     home = Path.home()
     candidates = [
         home / ".android" / "avd" / f"{avd_name}.avd" / "config.ini",
         home / "AppData" / "Local" / "Android" / "Sdk" / ".android" / "avd" / f"{avd_name}.avd" / "config.ini",
     ]
+    ram_gb = float(((hw or {}).get("ram") or {}).get("total_gb") or 16)
+    # Scale per-AVD RAM: keep host usable when running multiple instances
+    if ram_gb < 8:
+        ram_mb = "1536"
+    elif ram_gb < 12:
+        ram_mb = "2048"
+    elif ram_gb < 16:
+        ram_mb = "2048"
+    else:
+        ram_mb = "3072"
+    cores = int(((hw or {}).get("cpu") or {}).get("physical_cores") or 4)
+    per_avd_cores = "2" if cores >= 6 else "1"
     tweaks = {
-        "hw.ramSize": "2048",
+        "hw.ramSize": ram_mb,
+        "hw.cpu.ncore": per_avd_cores,
         "hw.gpu.enabled": "yes",
         "hw.gpu.mode": "auto",
         "disk.dataPartition.size": "2G",
         "hw.keyboard": "yes",
+        "skin.name": "pixel_4",
+        "hw.device.name": "pixel_4",
     }
     for path in candidates:
         if not path.exists():
@@ -176,20 +214,10 @@ def _write_avd_config_tweaks(avd_name: str) -> None:
 
 
 def wait_for_boot(adb_path: str = "adb", serial: str | None = None, timeout_s: float = 180.0) -> dict[str, Any]:
-    adb = shutil.which(adb_path) or adb_path
-    base = [adb]
-    if serial:
-        base += ["-s", serial]
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            out = subprocess.check_output(base + ["shell", "getprop", "sys.boot_completed"], text=True, timeout=10, stderr=subprocess.DEVNULL)
-            if out.strip() == "1":
-                return {"ok": True, "serial": serial}
-        except (OSError, subprocess.SubprocessError):
-            pass
-        time.sleep(2)
-    return {"ok": False, "error": "boot_timeout", "serial": serial}
+    """Delegate to shared ADB boot waiter (sys.boot_completed=1)."""
+    from centbot.android.adb import wait_boot_completed
+
+    return wait_boot_completed(adb_path=adb_path, serial=serial, timeout_s=timeout_s)
 
 
 def plan_emulator_count() -> dict[str, Any]:

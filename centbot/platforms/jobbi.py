@@ -122,13 +122,20 @@ class JobbiConnector(PlatformConnector):
         }
 
     def accept_task(self, task: PlatformTask) -> dict[str, Any]:
-        # Jobbi cannot claim; return handoff to originating board.
+        # Jobbi cannot claim — hand off to an origin platform that CENTBOT already integrates.
+        origin = str((task.raw or {}).get("origin_source") or "").lower()
+        mapped = _map_origin_platform(origin, task.url or "")
         return {
             "ok": False,
             "reason": "index_only",
             "handoff_url": task.url,
             "origin_source": (task.raw or {}).get("origin_source"),
-            "message": "Open the originating board to claim; Jobbi does not hold claims or pay.",
+            "origin_platform": mapped,
+            "message": (
+                f"Jobbi ir indekss. Ja izcelsme ir {mapped or 'nezināma'}, "
+                "pieņemšana jāveic caur atbilstošo CENTBOT konektoru (BasedAgents/TaskMarket/…)."
+            ),
+            "user_action": "use_origin_platform_connector" if mapped else "open_origin_url",
         }
 
     def submit_result(self, task: PlatformTask, payload: dict[str, Any]) -> dict[str, Any]:
@@ -171,6 +178,8 @@ def _hint_from_tags(tags: list[Any]) -> str:
         ("excel", "excel"),
         ("pdf", "pdf"),
         ("image", "image"),
+        ("gif", "image"),
+        ("video", "image"),
         ("writing", "text"),
         ("content", "text"),
         ("data", "json_xml"),
@@ -181,3 +190,16 @@ def _hint_from_tags(tags: list[Any]) -> str:
         if needle in joined:
             return cat
     return "other"
+
+
+def _map_origin_platform(origin: str, url: str) -> str | None:
+    blob = f"{origin} {url}".lower()
+    if "basedagents" in blob:
+        return "basedagents"
+    if "taskmarket" in blob:
+        return "taskmarket"
+    if "agentizable" in blob:
+        return "agentizable"
+    if "bountybook" in blob:
+        return "bountybook"
+    return None

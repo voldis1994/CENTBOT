@@ -29,6 +29,7 @@ class WorkerSlot:
     capacity: int = 1
     active: int = 0
     serial: str | None = None
+    avd: str | None = None
     load: float = 0.0
 
 
@@ -60,10 +61,25 @@ class SmartWorkDistributor:
 
     def bind_android_serials(self, serials: list[str]) -> None:
         with self._lock:
-            for i, serial in enumerate(serials[:4], start=1):
+            for i in range(1, 5):
                 wid = f"android_{i}"
-                if wid in self.workers:
-                    self.workers[wid].serial = serial
+                if wid not in self.workers:
+                    continue
+                if i <= len(serials):
+                    self.workers[wid].serial = serials[i - 1]
+                    self.workers[wid].capacity = max(1, self.workers[wid].capacity)
+                # Do not clear avd/serial here when fewer serials — caller sets avd explicitly
+
+    def bind_android_slots(self, slots: list[dict[str, Any]]) -> None:
+        """Bind by AVD order: [{worker, avd, serial}, ...]."""
+        with self._lock:
+            for slot in slots:
+                wid = str(slot.get("worker") or "")
+                if wid not in self.workers:
+                    continue
+                self.workers[wid].serial = slot.get("serial")
+                self.workers[wid].avd = slot.get("avd")
+                if slot.get("serial"):
                     self.workers[wid].capacity = max(1, self.workers[wid].capacity)
 
     def rebalance_roles(self) -> None:
@@ -159,6 +175,7 @@ class SmartWorkDistributor:
                         "active": w.active,
                         "capacity": w.capacity,
                         "serial": w.serial,
+                        "avd": w.avd,
                     }
                     for wid, w in self.workers.items()
                 },
