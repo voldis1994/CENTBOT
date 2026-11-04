@@ -110,6 +110,11 @@ def clear_stale_runtime() -> dict[str, Any]:
     return {"cleared_stale_pid": cleared, "running": already_running()}
 
 
+def _progress(msg: str) -> None:
+    """Visible START.bat progress — CMD looks hung without these lines."""
+    print(f"[CENTBOT] {msg}", flush=True)
+
+
 def start_emulators(
     *,
     adb: str = "adb",
@@ -121,6 +126,7 @@ def start_emulators(
     plan = plan_emulator_count()
     n = count if count is not None else int(plan["recommended"])
     names = AVD_NAMES[:n]
+    _progress(f"Android: plānoju {n} emulatoru(s) · RAM/CPU limits: {plan.get('reason') or plan.get('note') or 'ok'}")
     try:
         from centbot.android.adb import ensure_server
 
@@ -130,6 +136,7 @@ def start_emulators(
     try:
         present = set(list_avds(emulator))
     except Exception as exc:  # noqa: BLE001
+        _progress(f"Android: nevar nolasīt AVD sarakstu — {exc}")
         return {
             "planned": names,
             "started": [],
@@ -140,8 +147,11 @@ def start_emulators(
             "skipped": True,
             "error": f"list_avds_failed:{exc}",
         }
+    found = sorted(present.intersection(names))
+    _progress(f"Android: atrasti CENTBOT AVD: {', '.join(found) if found else '(nav)'}")
     if not present.intersection(names):
         # No CENTBOT AVDs — do not sleep/wait_for_boot (that made START appear hung)
+        _progress("Android: nav CENTBOT_ANDROID_01..04 — palaid INSTALL_ANDROID.bat (engine tomēr startēs)")
         return {
             "planned": names,
             "started": [{"avd": n, "ok": False, "error": "avd_missing"} for n in names],
@@ -157,16 +167,20 @@ def start_emulators(
     for name in names:
         if name not in present:
             started.append({"avd": name, "ok": False, "error": "avd_missing"})
+            _progress(f"Android: {name} trūkst — izlaižu")
             continue
         try:
+            _progress(f"Android: startē {name}…")
             proc = subprocess.Popen(
                 [emulator, "-avd", name, "-no-audio", "-no-boot-anim", "-gpu", "auto"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             started.append({"avd": name, "ok": True, "pid": proc.pid})
+            _progress(f"Android: {name} PID {proc.pid}")
         except OSError as exc:
             started.append({"avd": name, "ok": False, "error": str(exc)})
+            _progress(f"Android: {name} kļūda — {exc}")
     boots: list[dict[str, Any]] = []
     time.sleep(2)
     try:
@@ -179,10 +193,15 @@ def start_emulators(
         detailed = []
     if wait_boot:
         # Wait for each newly started CENTBOT AVD (cap total wait)
-        per = max(15.0, boot_timeout_s / max(1, len([s for s in started if s.get("ok")])))
+        ok_started = [s for s in started if s.get("ok")]
+        per = max(15.0, boot_timeout_s / max(1, len(ok_started)))
         deadline = time.time() + boot_timeout_s
-        pending = {s["avd"] for s in started if s.get("ok")}
+        pending = {s["avd"] for s in ok_started}
         seen: set[str] = set()
+        _progress(
+            f"Android: gaidu boot (līdz {int(boot_timeout_s)}s) · {', '.join(sorted(pending)) or '—'}"
+        )
+        last_note = 0.0
         while pending and time.time() < deadline:
             try:
                 from centbot.android.adb import devices as _devices
@@ -193,17 +212,29 @@ def start_emulators(
                         continue
                     avd = _avd(adb, serial)
                     if avd and avd in pending and serial not in seen:
+                        _progress(f"Android: boot pārbaude {avd} ({serial})…")
                         boot = wait_for_boot(adb, serial=serial, timeout_s=min(per, max(5.0, deadline - time.time())))
                         boots.append({**boot, "avd": avd})
                         seen.add(serial)
                         if boot.get("ok"):
                             pending.discard(avd)
+                            _progress(f"Android: {avd} gatavs")
+                        else:
+                            _progress(f"Android: {avd} vēl nav gatavs — {boot.get('error') or 'gaida'}")
             except Exception:  # noqa: BLE001
                 pass
+            now = time.time()
+            if pending and now - last_note >= 8.0:
+                left = int(max(0.0, deadline - now))
+                _progress(f"Android: joprojām gaida {', '.join(sorted(pending))} · {left}s atlikušas")
+                last_note = now
             if pending:
                 time.sleep(2)
         for avd in list(pending):
             boots.append({"ok": False, "error": "boot_timeout", "avd": avd})
+            _progress(f"Android: {avd} boot timeout — engine startēs bez tā")
+    ready = sum(1 for b in boots if b.get("ok"))
+    _progress(f"Android: pabeigts · palaisti {sum(1 for s in started if s.get('ok'))} · boot OK {ready}")
     return {
         "planned": names,
         "started": started,
@@ -431,6 +462,7 @@ def _open_browser(url: str) -> None:
 
 
 def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
+    _progress("START: pārbaudu setup un config…")
     if setup_incomplete():
         return {"ok": False, "error": "setup_incomplete", "action": "run_SETUP.bat"}
     from centbot.core.config import Config
@@ -447,6 +479,7 @@ def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
         skip_emulators = True
     android_on = bool(config.get("android.enabled", True))
     if skip_emulators:
+        _progress("Android: izlaižu emulatorus (--skip-emulators / CENTBOT_START_EMULATORS=0)")
         out["emulators"] = {
             "ok": True,
             "skipped": True,
@@ -476,7 +509,9 @@ def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
         # Missing AVDs are warnings — engine still starts for live PC claims
         if any(not r.get("ok") for r in (emu.get("started") or [])):
             out["warning_android"] = "some_avds_missing_or_failed_engine_still_starting"
+            _progress("Android: daži AVD nebija gatavi — PC lane (LIVE) startē tik un tā")
     elif not android_on:
+        _progress("Android: disabled configā (android.enabled=false)")
         out["emulators"] = {
             "ok": True,
             "skipped": True,
@@ -487,6 +522,14 @@ def full_start(*, skip_emulators: bool = False) -> dict[str, Any]:
     if config.is_live() and not audit.get("ready_for_live"):
         out["warning"] = "live_partial_readiness"
         out["consistency"] = audit
+        blockers = ", ".join(str(b) for b in (audit.get("blockers") or [])[:5]) or "—"
+        _progress(f"LIVE: partial readiness · blockers: {blockers}")
+    _progress("START: palaižu engine + control panel…")
     out["engine"] = start_engine(open_dashboard=True)
     out["ok"] = bool(out["engine"].get("ok"))
+    dash = (out["engine"] or {}).get("dashboard") or "http://127.0.0.1:8787/"
+    if out["ok"]:
+        _progress(f"START: OK · panelis {dash} · atver Darbība lai redzētu pulsu")
+    else:
+        _progress(f"START: kļūda — {(out['engine'] or {}).get('error') or 'skaties logs'}")
     return out

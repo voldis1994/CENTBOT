@@ -117,6 +117,7 @@ if /I "%CENTBOT_START_EMULATORS%"=="1" set "START_ARGS=--with-emulators"
 if /I "%CENTBOT_START_EMULATORS%"=="true" set "START_ARGS=--with-emulators"
 if /I "%CENTBOT_START_EMULATORS%"=="yes" set "START_ARGS=--with-emulators"
 echo [CENTBOT] Android start args: %START_ARGS% ^(empty = follow android.enabled^)
+echo [CENTBOT] Gaidu Android boot + engine ^(parasti 30-120s^) — logs parādīsies zemāk...
 
 "%PY%" -m centbot.windows.start %START_ARGS%
 set "EC=%ERRORLEVEL%"
